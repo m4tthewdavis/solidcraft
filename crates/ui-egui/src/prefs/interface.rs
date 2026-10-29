@@ -87,6 +87,11 @@ pub(super) fn interface(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                         let check = setting::sketch_tab_always(app, ui).on_hover_text(app.tr("prefs.sketch_tab_always_note"));
                         crate::scenario::publish_target("prefs:sketch_tab_always", check.rect);
                     });
+                    // Tab changes fade the panels; off swaps them at once.
+                    ui_kit::row(ui, "", |ui| {
+                        let check = setting::ribbon_motion(app, ui).on_hover_text(app.tr("prefs.ribbon_motion_note"));
+                        crate::scenario::publish_target("prefs:ribbon_motion", check.rect);
+                    });
                     // Where every feature dialog puts its OK and Cancel (#6708).
                     ui_kit::row(ui, app.tr("prefs.dialog_buttons"), |ui| {
                         let placements = [crate::ui_kit::DialogButtons::Bottom, crate::ui_kit::DialogButtons::Top];

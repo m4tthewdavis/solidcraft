@@ -360,6 +360,7 @@ One setting per line, sorted by name. A change that adds a setting adds its own 
 - `pan_reverse_x` (default false: horizontal scrolling pans the other way)
 - `pan_reverse_y` (default false: vertical scrolling pans the other way)
 - `placement_handles` (default false: handles on the preview of a Rest, Boss or Snap Fit that move it across the model and turn it)
+- `ribbon_motion` (default true: changing ribbon tabs cross-fades the panels over 0.2 s, the old tab's panels fading out as the new tab's fade in, and eases the tab highlight across; false: both swap at once, as before)
 - `show_frame_rate` (default false: frames per second in the view's bottom-right corner, counting the frames the view draws anyway; it reads 0 FPS once the view is idle)
 - `sketch_auto_dimensions` (default false: each shape drawn in a sketch gets all its dimensions at the sizes drawn, as `sketch.draw.dimensioned` with `as_drawn`; typed values win)
 - `sketch_auto_locate` (default false; with `sketch_auto_dimensions`, new shapes are also placed from the sketch origin until fully constrained, as `sketch.draw.dimensioned` with `locate`)

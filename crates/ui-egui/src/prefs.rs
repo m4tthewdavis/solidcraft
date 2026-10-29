@@ -928,6 +928,9 @@ preference_settings! {
     /// Keep the SKETCH tab in the ribbon, right after MODEL, while no sketch is open; its drawing
     /// tools then start a sketch first (#7904).
     sketch_tab_always: bool = false, PAGE_INTERFACE => check_id("prefs.sketch_tab_always");
+    /// Changing ribbon tabs cross-fades the panels and eases the tab highlight across
+    /// (`ui_kit::CrossFade`); off swaps them at once, as before.
+    ribbon_motion: bool = true, PAGE_INTERFACE => check_id("prefs.ribbon_motion");
     /// Where a dialog's OK and Cancel sit: under its inputs (the default) or in its title row (#6708).
     dialog_buttons: crate::ui_kit::DialogButtons = Default::default(), PAGE_INTERFACE;
     /// Where notices and offers stack: the view's bottom-right corner (the default) or the bottom
@@ -4517,6 +4520,7 @@ mod tests {
             ("layout", json!("compact"), PAGE_INTERFACE),
             ("ribbon_labels", json!(false), PAGE_INTERFACE),
             ("sketch_tab_always", json!(true), PAGE_INTERFACE),
+            ("ribbon_motion", json!(false), PAGE_INTERFACE),
             ("dialog_buttons", json!("top"), PAGE_INTERFACE),
             ("toast_place", json!("centre"), PAGE_INTERFACE),
             ("timeline_left", json!(true), PAGE_INTERFACE),
