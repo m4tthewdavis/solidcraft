@@ -87,6 +87,11 @@ pub(super) fn interface(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                         let check = setting::sketch_tab_always(app, ui).on_hover_text(app.tr("prefs.sketch_tab_always_note"));
                         crate::scenario::publish_target("prefs:sketch_tab_always", check.rect);
                     });
+                    // A double-click on a design tab renames it; off, it maximizes the window.
+                    ui_kit::row(ui, "", |ui| {
+                        let check = setting::tab_double_click_renames(app, ui).on_hover_text(app.tr("prefs.tab_double_click_renames_note"));
+                        crate::scenario::publish_target("prefs:tab_double_click_renames", check.rect);
+                    });
                     // Where every feature dialog puts its OK and Cancel (#6708).
                     ui_kit::row(ui, app.tr("prefs.dialog_buttons"), |ui| {
                         let placements = [crate::ui_kit::DialogButtons::Bottom, crate::ui_kit::DialogButtons::Top];

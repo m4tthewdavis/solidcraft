@@ -5,7 +5,9 @@
 - **Title bar.** On Windows and Linux the application bar is the window's title bar. On the left:
   the File menu (New, Open, Save, Save As, Export…), undo and redo, the Home tab (the start page)
   and one tab per open design (each with its own undo history, selection and camera; a dot marks
-  unsaved changes). On the right: Report a bug, Help (?), Preferences (which hold the theme) and the
+  unsaved changes). Double-click a design's tab to rename the design: type the name, then press
+  Enter or click elsewhere to keep it, or Esc to leave the old one (Preferences › Interface turns
+  this off, for a double-click that maximizes the window instead). On the right: Report a bug, Help (?), Preferences (which hold the theme) and the
   window's buttons.
 - **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (MODEL, SURFACE,
   ASSEMBLE, INSERT, INSPECT, MANAGE, VIEW and SHEET METAL) hold sections of commands. SKETCH appears while
