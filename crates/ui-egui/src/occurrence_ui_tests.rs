@@ -35,6 +35,29 @@ fn fixture() -> (Harness, u64, u64, u64) {
 }
 
 #[test]
+fn folder_visibility_shortcut_targets_only_the_clicked_placement() {
+    let (mut h, component, first, second) = fixture();
+    let group = h.app.run("browser.group", json!({"component":component,"folder":"bodies","items":["Body1"],"name":"Group"})).unwrap()["group"]
+        .as_u64()
+        .unwrap();
+    h.app.preferences.browser_bodies_folders = crate::prefs::BodiesFolders::Always;
+    h.app.tree.collapsed.insert(super::occurrence_key(&[first]));
+    h.settle();
+    let first_body = h.app.session.occurrence_bodies(&[first], false).unwrap()[0].clone();
+    let second_body = h.app.session.occurrence_bodies(&[second], false).unwrap()[0].clone();
+    for (label, key) in [("Bodies", format!("o:{second}/bodies")), ("Group (1)", format!("o:{second}/g{group}"))] {
+        h.step(&json!({"click":{"handle":format!("row:{label}")}})).unwrap();
+        h.step(&json!({"key":"V"})).unwrap();
+        assert_eq!(h.app.session.visibility.hidden_folders, vec![key]);
+        assert!(h.app.session.body_visible(&first_body));
+        assert!(!h.app.session.body_visible(&second_body));
+        h.step(&json!({"key":"V"})).unwrap();
+        assert!(h.app.session.body_visible(&second_body));
+        h.step(&json!({"click":{"handle":format!("row:{label}")}})).unwrap();
+    }
+}
+
+#[test]
 fn browser_reuses_unchanged_rows_and_refreshes_live_state_and_replaced_documents() {
     let (mut h, _, first, second) = fixture();
     let second_body = h.app.session.occurrence_bodies(&[second], false).unwrap().pop().unwrap();
@@ -126,6 +149,24 @@ fn occurrence_second_row_selects_exact_path_and_menu_actions() {
     click(&mut h, &[second], "activate");
     assert_eq!(h.app.session.active_component, component);
     assert_eq!(h.app.session.active_occurrence_path, Some(vec![second]));
+}
+
+#[test]
+fn turn_up_axis_follows_the_placement_right_clicked() {
+    // Whichever placement comes first, a grounded one can't turn and a free one can.
+    let (mut h, _, first, second) = fixture();
+    let turns = |h: &Harness, occurrence: u64| {
+        let items = context_menu::items(&h.app, &Target::Occurrence { path: vec![occurrence] });
+        let turn = items.into_iter().find(|i| i.id == "ui.turnUpAxis").unwrap();
+        let children: Vec<_> = turn.children.iter().map(|c| (c.enabled, c.params.as_ref().unwrap()["occurrence"].as_u64())).collect();
+        (turn.enabled, children)
+    };
+    for (grounded, free) in [(first, second), (second, first)] {
+        h.app.run("occurrence.ground", json!({"occurrence": grounded, "grounded": true})).unwrap();
+        h.app.run("occurrence.ground", json!({"occurrence": free, "grounded": false})).unwrap();
+        assert_eq!(turns(&h, free), (true, vec![(true, Some(free)); 2]), "free placement {free}");
+        assert_eq!(turns(&h, grounded), (false, vec![(false, Some(grounded)); 2]), "grounded placement {grounded}");
+    }
 }
 
 #[test]
@@ -391,11 +432,10 @@ fn a_folded_body_sits_one_level_under_its_nested_placement() {
     h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Pin"})).unwrap();
     h.app.run("component.activate", json!({"component":0})).unwrap();
     h.app.tree.collapsed.insert(format!("{}/bodies", super::occurrence_key(&[parent, child])));
-    // How many levels the body's row sits under its placement's (each eye sits at the same offset
-    // in its row).
+    // How many levels the body's row sits under its placement's.
     let levels = || -> Option<i32> {
-        let placement = crate::scenario::handle_at(&format!("eye:occurrence:{parent}/{child}"))?;
-        let body = crate::scenario::handle_at("eye:Pin")?;
+        let placement = crate::scenario::handle_at("indent:Child:1")?;
+        let body = crate::scenario::handle_at("indent:Pin")?;
         Some(((body.x - placement.x) / super::INDENT).round() as i32)
     };
     for (mode, want) in [(BodiesFolders::Several, Some(1)), (BodiesFolders::Never, Some(1)), (BodiesFolders::Always, None)] {
@@ -453,7 +493,98 @@ fn a_folded_folders_menu_items_move_to_the_placements_menu() {
     let group = context_menu::items(&h.app, &target).into_iter().find(|i| i.id == "ui.groupSelected").unwrap();
     context_menu::run_item(&mut h.app, &group, egui::Pos2::ZERO);
     let made = h.app.session.doc.browser_groups.iter().find(|g| g.component == component).unwrap();
-    assert_eq!(made.items, ["Body1", "Second"]);
+    assert_eq!(made.item_keys().collect::<Vec<_>>(), ["Body1", "Second"]);
     h.app.preferences.browser_bodies_folders = BodiesFolders::Always;
     assert!(!has(&h, "component.from_bodies"), "Always: on the folder's own menu");
+}
+
+/// #5164: dragging a placement row onto another moves it into that component. The command
+/// underneath is `occurrence.reparent`, which keeps the placement's world position. Dragging it
+/// back onto the design row moves it out to the design.
+#[test]
+fn dragging_an_occurrence_row_onto_another_moves_it_into_that_component() {
+    let mut h = Harness::new();
+    // Component A with a body, at the design root.
+    let a = h.app.run("component.create", json!({"name":"A"})).unwrap();
+    let (_a_comp, a_occ) = (a["component"].as_u64().unwrap(), a["occurrence"].as_u64().unwrap());
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+    // Back to the design root so B is a sibling of A, not a child of it.
+    h.app.run("component.activate", json!({"component":0})).unwrap();
+    // Component B with a body, at the design root.
+    let b = h.app.run("component.create", json!({"name":"B"})).unwrap();
+    let (b_comp, b_occ) = (b["component"].as_u64().unwrap(), b["occurrence"].as_u64().unwrap());
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"corner":[30,0,0]})).unwrap();
+    h.app.run("component.activate", json!({"component":0})).unwrap();
+    h.frames(3);
+
+    // Both rows sit at the root. Drag A's row onto B's row.
+    let from = crate::scenario::handle_at(&format!("row:occurrence:{a_occ}")).unwrap();
+    let to = crate::scenario::handle_at(&format!("row:occurrence:{b_occ}")).unwrap();
+    let drag = h.call("ui.drag", json!({"x0":from.x,"y0":from.y,"x1":to.x,"y1":to.y,"steps":12}));
+    assert_eq!(drag["ok"], true);
+    h.frames(2);
+
+    // A's occurrence is now a child of B's occurrence.
+    let o = h.app.session.doc.occurrences.iter().find(|o| o.id == a_occ).unwrap();
+    assert_eq!(o.parent, b_comp, "A's occurrence moved into component B");
+    assert_eq!(h.app.session.doc.occurrences.iter().find(|o| o.id == b_occ).unwrap().parent, 0, "B's occurrence stays at the design");
+
+    // Drag A's row, now under B, back onto the design row.
+    let design = crate::scenario::handle_at("row:Untitled").unwrap();
+    let from = crate::scenario::handle_at(&format!("row:occurrence:{b_occ}/{a_occ}")).unwrap();
+    let drag = h.call("ui.drag", json!({"x0":from.x,"y0":from.y,"x1":design.x,"y1":design.y,"steps":12}));
+    assert_eq!(drag["ok"], true);
+    h.frames(2);
+    let o = h.app.session.doc.occurrences.iter().find(|o| o.id == a_occ).unwrap();
+    assert_eq!(o.parent, 0, "A's occurrence moved back out to the design");
+}
+
+/// Dropping a placement row on the top of a sibling's row puts it before that sibling, in the
+/// order saved with the design; the rows follow. (The middle of a row moves it into that
+/// component, as above.)
+#[test]
+fn dragging_an_occurrence_row_onto_the_top_of_a_sibling_reorders_them() {
+    let mut h = Harness::new();
+    let mut placed = Vec::new();
+    for name in ["A", "B", "C"] {
+        placed.push(h.app.run("component.create", json!({"name":name})).unwrap()["occurrence"].as_u64().unwrap());
+        h.app.run("component.activate", json!({"component":0})).unwrap();
+    }
+    let [a, b, c] = [placed[0], placed[1], placed[2]];
+    h.frames(3);
+    let row = |id: u64| crate::scenario::handle_at(&format!("row:occurrence:{id}")).unwrap();
+    let (from, to) = (row(c), row(a));
+    assert_eq!(h.call("ui.drag", json!({"x0":from.x,"y0":from.y,"x1":to.x,"y1":to.y - 10.0,"steps":12}))["ok"], true);
+    h.frames(3);
+    let saved = &h.app.session.doc.browser_order["0/components"];
+    assert_eq!(*saved, [c, a, b].map(|id| solidcraft_engine::doc::BrowserEntry::item(&id.to_string())));
+    assert!(row(c).y < row(a).y && row(a).y < row(b).y, "the rows follow the saved order");
+    assert!(h.app.session.doc.occurrences.iter().all(|o| o.parent == 0), "none moved into another");
+}
+
+/// #10218: the design's Sketches folder offers Move Sketches to the Part They're On for its
+/// sketches; the one drawn on the part's face goes to the part, the one on XY stays, and the
+/// status bar says so.
+#[test]
+fn sketches_folder_moves_its_sketches_to_the_part_they_are_on() {
+    let (mut h, component, occurrence) = crate::test_support::component_box();
+    h.app.session.auto_project = false;
+    let world = h.app.session.world_state();
+    let body = world.bodies.iter().find(|b| h.app.session.doc.model_body_component(b) == component).unwrap().name.clone();
+    let face = world.body(&body).unwrap().body.faces(0.01).unwrap().into_iter().max_by(|a, b| a.centroid.z.total_cmp(&b.centroid.z)).unwrap();
+    let pick = json!({"face":[face.centroid.x,face.centroid.y,face.centroid.z],"body":body,"index":face.index,"path":[occurrence]});
+    let on_face = h.app.run("sketch.create", json!({"name":"OnFace","plane":pick})).unwrap()["sketch"].as_u64().unwrap();
+    h.app.finish_sketch();
+    let on_xy = h.app.run("sketch.create", json!({"name":"OnXY","plane":"XY"})).unwrap()["sketch"].as_u64().unwrap();
+    h.app.finish_sketch();
+    let target = Target::Folder { component: 0, folder: "sketches".into(), scope: "c0".into() };
+    let items = context_menu::items(&h.app, &target);
+    let item = items.iter().find(|i| i.id == "component.move_sketches.to_parts").expect("on the Sketches folder's menu");
+    assert_eq!(item.params.as_ref().unwrap()["sketches"], json!([on_face.to_string(), on_xy.to_string()]));
+    context_menu::run_item(&mut h.app, item, egui::Pos2::ZERO);
+    assert_eq!(h.app.session.doc.feature(on_face).unwrap().component, component);
+    assert_eq!(h.app.session.doc.feature(on_xy).unwrap().component, 0);
+    let (status, _, error) = h.app.status.clone().unwrap();
+    assert!(!error && status.contains("Moved 1") && status.contains("1 stayed") && status.contains("not on a part's face"), "{status}");
+    assert!(context_menu::items(&h.app, &Target::Sketch { id: on_xy }).iter().any(|i| i.id == "component.move_sketches.to_parts"));
 }

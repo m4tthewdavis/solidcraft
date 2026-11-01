@@ -28,6 +28,7 @@ mod native_cad;
 pub use native_cad::{NATIVE_CAD_EXTS, is_native_cad_path, native_cad_to_step};
 pub mod paper;
 mod ply;
+mod ply_complex;
 pub use ply::{ply_counts, read_ply_mesh};
 mod point_cloud;
 pub use point_cloud::{CloudFile, DEFAULT_MAX_POINTS, MAX_POINT_CLOUD_BYTES, is_ply_path, is_point_cloud_path, read_point_cloud};
@@ -43,16 +44,18 @@ pub use dxf_out::{DxfEntity, DxfLayer, DxfLinetype, DxfShape, loop_shapes, seg_s
 pub use legacy_dir::{APP_ID, LEGACY_APP_ID, PREVIOUS_APP_IDS, adopt_legacy_dir, legacy_flatpak_paths};
 pub use safe_write::{backup_path, write_atomic};
 pub use sketch2d::{Geom2, MAX_DRAWING_BYTES};
-pub use svg::read_svg;
+pub use svg::{decode_svg, read_svg, svg_nothing_to_import};
 mod gltf_in;
 pub use gltf_in::{GltfImport, Loader, MAX_GLTF_BYTES, MeshPlan, PlanPlace, glb_container, is_gltf_path, read_gltf};
 mod obj;
 pub use obj::read_obj;
-pub use threemf::{MAX_3MF_BYTES, MeshObject, model_xml, model_xml_with, read_3mf, weld, write_3mf, write_3mf_with};
+pub use threemf::{
+    MAX_3MF_BYTES, MeshObject, model_xml, model_xml_parts, model_xml_with, read_3mf, weld, write_3mf, write_3mf_parts, write_3mf_with,
+};
 pub use urdf::{UrdfOptions, UrdfPackage, urdf};
 
 use solidcraft_doc::{Document, Metadata, ModelState};
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{MassProperties, Mesh, Vec3};
 
 /// Design file extension: new designs, autosaves and recovery files are written as `.sc`.
 pub const DESIGN_EXT: &str = "sc";
@@ -423,6 +426,14 @@ fn weld_eps(b: &solidcraft_kernel::Body) -> f64 {
     (b.size() * 1e-6).max(1e-7)
 }
 
+/// Unit-density [`MassProperties`] of a body from its welded [`export_mesh`], the mesh URDF links
+/// take their inertia from; `None` when that mesh does not close (an open surface).
+pub fn mass_properties(b: &solidcraft_kernel::Body) -> Result<Option<MassProperties>> {
+    let m = export_mesh(b)?;
+    let (positions, triangles) = weld(&m.positions, &m.triangles, weld_eps(b));
+    Ok(Mesh { positions, triangles, ..Mesh::default() }.mass_properties())
+}
+
 /// Binary STL of several meshes (one solid).
 pub fn stl_binary(meshes: &[Mesh], name: &str) -> Vec<u8> {
     let n: usize = meshes.iter().map(|m| m.triangles.len()).sum();
@@ -683,6 +694,21 @@ pub fn export_with_quality(
     meta: &Metadata,
     quality: MeshQuality,
 ) -> Result<Vec<u8>> {
+    export_with_parts(state, bodies, &[], format, name, meta, quality)
+}
+
+/// [`export_with_quality`], and in 3MF each of `parts` (a name and the names of its bodies)
+/// written as one object with those bodies as its parts ([`model_xml_parts`], #8139).
+/// Bodies of a part that are not exported are left out of it. Other formats have no parts.
+pub fn export_with_parts(
+    state: &ModelState,
+    bodies: &[String],
+    parts: &[(String, Vec<String>)],
+    format: Format,
+    name: &str,
+    meta: &Metadata,
+    quality: MeshQuality,
+) -> Result<Vec<u8>> {
     let sel = selected(state, bodies)?;
     Ok(match format {
         Format::StlBinary | Format::StlAscii => {
@@ -716,7 +742,9 @@ pub fn export_with_quality(
         }
         Format::ThreeMf | Format::ThreeMfTagged => {
             let objs: Vec<MeshObject> = sel.iter().map(|b| mesh_object(b, format == Format::ThreeMfTagged, quality)).collect::<Result<_>>()?;
-            write_3mf_with(&objs, &threemf_metadata(meta))?
+            let index = |n: &String| sel.iter().position(|b| &b.name == n);
+            let parts: Vec<(String, Vec<usize>)> = parts.iter().map(|(p, names)| (p.clone(), names.iter().filter_map(index).collect())).collect();
+            write_3mf_parts(&objs, &parts, &threemf_metadata(meta))?
         }
         Format::Design => return Err(IoError::Format("sc (save the document instead)".into())),
         Format::Urdf => return Err(IoError::Format("urdf (an assembly package; use file.export)".into())),
@@ -796,6 +824,12 @@ pub fn read_design(bytes: &[u8]) -> Result<Document> {
     limits::check(limits::Kind::Design, bytes.len() as u64).map_err(|e| IoError::Invalid(format!("design {e}")))?;
     if is_design_container(bytes) {
         return design::read(bytes);
+    }
+    // Every DWG starts with its version (`AC1032`), whatever the file is called (#9328).
+    if bytes.starts_with(b"AC1") {
+        return Err(IoError::Invalid(
+            "this is a DWG file, which SolidCraft can't read: export the model as STEP and open that, or the drawing as DXF and use Insert DXF in a sketch".into(),
+        ));
     }
     let s = std::str::from_utf8(bytes).map_err(|_| IoError::Invalid("design file is not UTF-8 JSON".into()))?;
     // Only a file that isn't a design pays for asking whether it is a drawing.
@@ -1082,6 +1116,8 @@ mod tests {
         let back = read_design(&write_design(&doc)).unwrap();
         assert_eq!(back, doc);
         assert!(read_design(b"\xff\xfe").is_err());
+        let dwg = read_design(b"AC1032\0\0\0\0\0\xff\xfe").unwrap_err().to_string();
+        assert!(dwg.contains("this is a DWG file") && dwg.contains("STEP") && dwg.contains("DXF"), "{dwg}");
         assert!(matches!(export(&m.state(), &["nope".into()], Format::Step, "t"), Err(IoError::Empty)));
         assert_eq!(Format::from_name("a.STP").unwrap(), Format::Step);
         assert!(is_step_path("/x/Part.STEP") && is_step_path("a.stp") && !is_step_path("a.step.json") && !is_step_path("step"));

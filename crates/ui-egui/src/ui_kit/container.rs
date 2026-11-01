@@ -29,6 +29,8 @@ pub enum Surface {
     Toast,
     /// Viewport navigation controls (the compass itself is drawn geometry).
     Navigation,
+    /// Persistent, content-hugging status pills above the free model viewport.
+    ViewportStatus,
     /// Full-page content, the model viewport and native pop-out content.
     Viewport,
     /// Deliberate input-blocking backdrops; must not inherit CAD input blocking.
@@ -54,6 +56,17 @@ pub struct DockEdges {
 
 impl DockEdges {
     pub const ALL: Self = Self { left: true, right: true, top: true, bottom: true };
+}
+
+thread_local! {
+    /// The areas built as [`Surface::Canvas`]: a value box, a dimension's editor, a readout.
+    static CANVAS_AREAS: std::cell::RefCell<std::collections::HashSet<Id>> = std::cell::RefCell::default();
+}
+
+/// Is `layer` a model-anchored editor or readout ([`Surface::Canvas`])? Such an area sits on the
+/// model and scrolls nothing, so the model's wheel and trackpad navigation go on under it (#10061).
+pub(crate) fn is_canvas(layer: egui::LayerId) -> bool {
+    CANVAS_AREAS.with(|areas| areas.borrow().contains(&layer.id))
 }
 
 /// Universal outer host and surface policy. Both host geometry and frame construction must go
@@ -113,6 +126,49 @@ impl Container {
         container.show_frame(ui, frame, ui.max_rect(), |ui| super::scope(ui, add))
     }
 
+    /// Compact selection actions above canvas geometry, using the navigation host policy.
+    pub(crate) fn selection_card<R>(
+        ctx: &Context,
+        id: Id,
+        anchor: egui::Pos2,
+        bounds: egui::Rect,
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        let container = Self::new(ctx, Surface::Navigation);
+        let t = Tokens::get();
+        container.area(id).movable(false).pivot(egui::Align2::CENTER_BOTTOM).fixed_pos(anchor).constrain_to(bounds).order(egui::Order::Middle).show(
+            ctx,
+            |ui| {
+                let frame =
+                    container.frame(ctx, t.dialog_body, Side::Left).corner_radius(t.space_24 as u8).shadow(t.shell_shadow()).inner_margin(t.space_3);
+                container.show_frame(ui, frame, bounds, |ui| super::scope(ui, add)).inner
+            },
+        )
+    }
+
+    /// Standard content tooltip, including the same host and padding as library samples.
+    pub(crate) fn tooltip(response: &egui::Response, text: &str) {
+        let ctx = &response.ctx;
+        let mut tip = egui::Tooltip::for_enabled(response).at_pointer();
+        tip.popup = tip.popup.frame(Self::new(ctx, Surface::Toast).tooltip_frame(ctx));
+        tip.show(|ui| {
+            ui.label(text);
+            crate::scenario::publish_rect("kit:tooltip", ui.min_rect());
+        });
+    }
+
+    /// [`Self::tooltip`] holding what `add` draws (a picture, say), beside `response` rather than
+    /// at the pointer, so it does not cover the row's neighbours.
+    pub(crate) fn tooltip_ui(response: &egui::Response, add: impl FnOnce(&mut egui::Ui)) {
+        let ctx = &response.ctx;
+        let mut tip = egui::Tooltip::for_enabled(response);
+        tip.popup = tip.popup.align(egui::RectAlign::RIGHT_START).frame(Self::new(ctx, Surface::Toast).tooltip_frame(ctx));
+        tip.show(|ui| {
+            add(ui);
+            crate::scenario::publish_rect("kit:tooltip", ui.min_rect());
+        });
+    }
+
     /// Declare contacts from shell geometry; styling remains entirely in the container.
     pub fn joined(mut self, edges: DockEdges) -> Self {
         self.joined = Some(edges);
@@ -145,6 +201,7 @@ impl Container {
             Surface::Palette => flat.stroke(t.primary_border(t.border)).corner_radius(t.radius_xl).shadow(t.shell_shadow()),
             Surface::Panel | Surface::Chrome => flat.stroke(t.primary_border(t.border)).corner_radius(t.radius_lg).shadow(t.shell_shadow()),
             Surface::Navigation => flat.stroke(t.primary_border(t.border)).corner_radius(t.radius_md),
+            Surface::ViewportStatus => flat.stroke(t.primary_border(t.border)).corner_radius((t.control_height / 2.0 + t.space_4) as u8),
             Surface::Toast => flat.stroke(t.primary_border(t.border)).corner_radius(t.radius_md).shadow(t.shell_shadow()),
             Surface::Popup => Self::popup_frame(&ctx.global_style()).fill(fill),
             Surface::ApplicationBar | Surface::Canvas | Surface::Viewport | Surface::InputShield => flat,
@@ -264,9 +321,12 @@ impl Container {
     }
 
     pub fn area(self, id: Id) -> egui::Area {
-        // Persistent workspace cards stay below tool/system windows even when clicked.
-        // Other areas keep egui's normal window layer; popups choose their own order.
-        let order = if self.surface == Surface::Panel { egui::Order::Background } else { egui::Order::Middle };
+        if self.surface == Surface::Canvas {
+            CANVAS_AREAS.with(|areas| areas.borrow_mut().insert(id));
+        }
+        // Workspace cards and viewport status stay below tool/system windows even when
+        // clicked. Other areas keep the normal window layer; popups choose their order.
+        let order = if matches!(self.surface, Surface::Panel | Surface::ViewportStatus) { egui::Order::Background } else { egui::Order::Middle };
         egui::Area::new(id).enabled(self.input_enabled()).order(order)
     }
 

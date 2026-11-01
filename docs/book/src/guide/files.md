@@ -47,6 +47,13 @@ panel, and in the right-click menu of a body) open the same dialog with that for
 the selected bodies as STL, 3MF or 3MF with face tags (below) to a file you name, and you can change
 the format there.
 
+A 3MF has one object per body, so a slicer arranges the bodies of a multi-body part apart on the
+bed. Scripts and the control channel can keep each component together: `file.export` or
+`file.save_mesh` with `objects: "component"` writes every placed component that holds two or more
+bodies as one 3MF object whose parts are those bodies. PrusaSlicer, OrcaSlicer, Bambu Studio and
+Cura then load it as one object with a part per body, and each part can take its own filament. The
+design's own bodies, and a component with a single body, stay objects of their own.
+
 **File → Send to Slicer** (also on the Insert tab's Files panel, and in the right-click menu of a
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
 and sends it to a slicer. It always asks which one and pre-selects the slicer you used last time,
@@ -59,6 +66,17 @@ known slicers only, found in the usual program folders and on `PATH`. It falls b
 with a `slicer`, which sends without a dialog. They can start only the slicers in the
 list and programs you added under **Custom…**; any other program path is refused, and an AI agent's
 request to save a mesh or send it to a slicer asks first and names the slicer.
+
+A body can have a **print face**: the flat face it should lie on in the slicer. Select the face
+and press **Ctrl+B** (or **Print Face** in the face's right-click menu); press it again to clear
+it. The Send to Slicer window shows the print face of the one body being sent in its **Print
+face** row, where you can pick another face in the viewport or clear it. Each send then turns a
+copy of the body so the print face points down at Z = 0, with its centre of mass over the
+origin; the design itself does not move. The face is tinted and outlined in the viewport, and a
+copy made with Move/Copy or Mirror keeps it. A print face that is gone or no longer flat is
+reported, and the body is sent as it lies. Curved faces and mesh bodies can't be print faces.
+Known limitation: after a shell of a body that is already shelled, no face of that body can be
+marked, as no sketch can be attached to one either; this needs kernel work, which is paused.
 
 The list also has a plain **EasyPrint (Printables, in the browser)** row, and it is the one entry
 that works in the browser build too. EasyPrint is Printables' slicer, so choosing it uploads the

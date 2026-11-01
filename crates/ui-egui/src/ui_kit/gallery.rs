@@ -55,6 +55,17 @@ fn navigation_sample(ui: &mut Ui, size: crate::navigation_bar::Size) {
 
 // One entry per element/variant: names, rendering and geometry expectations stay together.
 const ELEMENTS: &[Element] = &[
+    element!("viewport_status_item", "viewport_status:sample:item", Some("viewport_status:sample:close"), |ui, _| {
+        let item = StatusItem {
+            id: "sample".into(),
+            kind: StatusKind::Mode,
+            name: "Draft".into(),
+            setting: "Z · 1°".into(),
+            has_key: true,
+            editable: false,
+        };
+        viewport_status_item(ui, &item, &mut StatusPresentation::default());
+    }),
     element!("sphere_thumbnail", |ui, _| {
         ui.horizontal(|ui| {
             for kind in [FinishKind::Matte, FinishKind::Satin, FinishKind::Gloss, FinishKind::Metal, FinishKind::Glass] {
@@ -112,11 +123,53 @@ const ELEMENTS: &[Element] = &[
             });
             navigation_tile(ui, "grid", "Grid", "style", false);
             row(ui, "Position", |ui| {
-                segmented(ui, &mut state.selected, &["Left", "Centre", "Right"], Default::default());
+                segmented(ui, &mut state.selected, &["Left", "Center", "Right"], Default::default());
             });
             checkbox(ui, "Show navigation bar", &mut state.checked);
             button(ui, "Reset to default", Button::Normal);
         });
+    }),
+    element!("linear_color_field", |ui, _| {
+        row(ui, "Zenith", |ui| linear_color_field(ui, &mut [0.5, 0.64, 0.81], 1e6));
+    }),
+    element!("section_method", |ui, _| {
+        section_method(ui, "gallery_method", "Atmosphere", true, "GPU", |ui| {
+            text(ui, "Participating medium", Text::Inline);
+        });
+    }),
+    element!("segments_availability", |ui, state| {
+        segmented(
+            ui,
+            &mut state.selected,
+            &["World", "Colour", "Gradient", "Clear"],
+            Segments { enabled: &[false, true, false, true], compact: true, ..Default::default() },
+        );
+    }),
+    element!("read_only_text", |ui, _| {
+        read_only_text(ui, "{\n  \"samples\": 256\n}");
+    }),
+    element!("method_section_sampling", |ui, state| {
+        method_section(ui, "gallery_method", "Path tracing", "GPU", Some("Needs GPU path tracing"), |ui| {
+            checkbox(ui, "Reduce noise", &mut state.checked);
+        });
+    }),
+    element!("icon_action", |ui, _| {
+        icon_action(ui, "Duplicate", "copy", true, false);
+        icon_action(ui, "Remove", "delete", true, true);
+    }),
+    element!("aspect_grid", |ui, _| {
+        aspect_grid(
+            ui,
+            &[
+                AspectTile { id: "gallery:aspect:wide", label: "16:9", aspect: 16.0 / 9.0, selected: true },
+                AspectTile { id: "gallery:aspect:square", label: "1:1", aspect: 1.0, selected: false },
+                AspectTile { id: "gallery:aspect:tall", label: "9:16", aspect: 9.0 / 16.0, selected: false },
+            ],
+        );
+    }),
+    element!("frame_guides", |ui, _| {
+        let (viewport, _) = ui.allocate_exact_size(vec2(200.0, 150.0), egui::Sense::hover());
+        frame_guides(ui, viewport, viewport.shrink(20.0), FrameGuides { thirds: true, safe_area: true, centre_mark: true });
     }),
     element!("tree_row_rect", |ui, _| {
         for (index, row) in [
@@ -158,9 +211,6 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("text_button", |ui, _| {
         text_button(ui, "Reset", true);
-    }),
-    element!("color_hex_field", |ui, _| {
-        color_hex_field(ui, &mut [52, 92, 160], None);
     }),
     element!("mixed_slider", |ui, _| {
         mixed_slider(ui, &mut 0.5, 0.0..=1.0, None);
@@ -217,6 +267,15 @@ const ELEMENTS: &[Element] = &[
             [TreeAction { icon: "lookat", hover_only: true, label: "Solo", reason: Some("Not available yet"), target: "gallery:tree:solo" }];
         tree_row(ui, ui.id().with("tree_actions"), &Row { label: "Light", actions: &actions, ..Default::default() });
     }),
+    element!("selection_actions", |ui, _| {
+        let actions = [
+            StageAction { icon: Some("chain"), label: "Appearance Chain", enabled: true, primary: false, reason: None },
+            StageAction { icon: Some("reorder"), label: "Replace All", enabled: true, primary: false, reason: None },
+            StageAction { icon: Some("star"), label: "Favorite Look", enabled: true, primary: true, reason: None },
+            StageAction { icon: Some("suppress"), label: "Hide", enabled: true, primary: false, reason: None },
+        ];
+        selection_actions(ui, "Boss", &actions);
+    }),
     element!("catalog_scope", |ui, state| {
         catalog_scope(ui, |ui| {
             search_field(ui, ui.id().with("catalog_search"), &mut state.value, "Search appearances");
@@ -270,6 +329,14 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("check_line_warning", |ui, _s| {
         check_line(ui, "gallery:check_warning", "Transparency approximation", true);
+    }),
+    element!("check_line_error", |ui, _s| {
+        check_status_line(ui, "gallery:check_error", "Image size exceeds the renderer limit", CheckStatus::Error);
+    }),
+    element!("check_status_line", |ui, _| {
+        check_status_line(ui, "gallery:status_ok", "Ready", CheckStatus::Ok);
+        check_status_line(ui, "gallery:status_warning", "Transparency approximation", CheckStatus::Warning);
+        check_status_line(ui, "gallery:status_error", "Image size exceeds the renderer limit", CheckStatus::Error);
     }),
     element!("segmented_unavailable", |ui, s| {
         segmented(
@@ -326,6 +393,28 @@ const ELEMENTS: &[Element] = &[
             badge: None,
         });
         sphere_grid(ui, &tiles);
+    }),
+    element!("sphere_grid_drag", |ui, _| {
+        let tiles = [SphereTile {
+            id: "gallery:drag-grid",
+            name: "Copper",
+            sphere: Sphere { color: Tokens::get().render_accent, kind: FinishKind::Metal, opacity: None },
+            selected: true,
+            users: 1,
+            tip: "Drag to apply",
+            badge: None,
+        }];
+        sphere_grid_drag(ui, &tiles);
+    }),
+    element!("sphere_cursor", |ui, _| {
+        let sphere = Sphere { color: Tokens::get().render_accent, kind: FinishKind::Satin, opacity: None };
+        sphere_thumbnail(ui, "gallery:cursor-sample", sphere, Tokens::get().control_height);
+        sphere_cursor(ui, sphere);
+    }),
+    element!("note_height", |ui, _| {
+        let label = "A wrapped note reserves its measured height in a bounded card.";
+        let _height = note_height(ui, label);
+        text(ui, label, Text::Note("gallery:measured-note"));
     }),
     element!("sphere_tile", "gallery:tile", Some("gallery:tile"), |ui, _| {
         SphereTile {
@@ -575,7 +664,7 @@ const ELEMENTS: &[Element] = &[
             let side = Tokens::get().space_24;
             for control in HistoryTransport::ALL {
                 let (rect, _) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
-                control.show(ui, rect);
+                control.show(ui, rect, false);
             }
         });
     }),
@@ -606,7 +695,7 @@ const ELEMENTS: &[Element] = &[
         });
     }),
     element!("file_action", |ui, _| {
-        FileView::action_tile(ui, "gallery:file:new", ui.available_width(), "new", "New design", "Millimetres · opens in Design", true);
+        FileView::action_tile(ui, "gallery:file:new", ui.available_width(), "new", "New design", "Millimeters · opens in Design", true);
     }),
     element!("file_recovery_banner", |ui, _| {
         FileView::recovery_banner(
@@ -892,6 +981,12 @@ const ELEMENTS: &[Element] = &[
             removable_header(ui, "Width");
         });
     }),
+    element!("sort_header", |ui, _| {
+        ui.allocate_ui(vec2(140.0, row_height()), |ui| {
+            ui.set_min_size(vec2(140.0, row_height()));
+            sort_header(ui, "Name", &mut Sort::Ascending);
+        });
+    }),
     element!("plus_header", |ui, _| {
         ui.allocate_ui(vec2(140.0, row_height()), |ui| {
             ui.set_min_size(vec2(140.0, row_height()));
@@ -987,6 +1082,11 @@ const ELEMENTS: &[Element] = &[
     element!("number_field", |ui, _| {
         number_field(ui, &mut 3_u32, 1..=200, 1.0, "");
     }),
+    element!("number_fields", |ui, _| {
+        row(ui, "Target", |ui| {
+            number_fields(ui, &mut [-18.0, 125.5, -18.0], -1e9..=1e9, 0.1, "");
+        });
+    }),
     element!("slider_percent", |ui, _| {
         slider(ui, &mut 1.0, 0.5..=2.5, Slider { step: Some(0.05), format: |v| format!("{:.0} %", v * 100.0), ..Default::default() });
     }),
@@ -1056,14 +1156,26 @@ const ELEMENTS: &[Element] = &[
     element!("text", "dialog:report:gallery", Some("dialog:report:gallery"), |ui, _| {
         text(ui, "Validation report with retained units: 10 mm", Text::Report("gallery", false));
     }),
+    element!("name_cell_with_hint", "dialog:cell:Width", Some("dialog:cell:Width"), |ui, _| {
+        name_cell_with_hint(ui, "Width", false, "Double-click to rename");
+    }),
     element!("search_field", |ui, s| {
         search_field(ui, ui.id().with("search"), &mut s.value, "Search");
+    }),
+    element!("menu_filter", |ui, s| {
+        menu_filter(ui, ui.id().with("menu_filter"), &mut s.value, "Filter");
     }),
     element!("cell_editor", |ui, s| {
         cell_editor(ui, ui.id().with("cell"), &mut s.value, "Expression", true);
     }),
     element!("color_field", |ui, _| {
         color_field(ui, &mut [120, 150, 180]);
+    }),
+    element!("color_field_with_opacity", |ui, _| {
+        color_field_with_opacity(ui, &mut [120, 150, 180], &mut 0.5);
+    }),
+    element!("mixed_color_field", |ui, _| {
+        mixed_color_field(ui, &mut [120, 150, 180], Some(&mut 0.5), Some("Mixed"));
     }),
     element!("slider", |ui, _| {
         slider(ui, &mut 0.5, 0.0..=1.0, Default::default());
@@ -1073,6 +1185,9 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("scalar_field", |ui, _| {
         scalar_field(ui, &mut 0.5, 0.0..=1.0);
+    }),
+    element!("track_number", |ui, _| {
+        track_number(ui, &mut 1350.0, 0.5, 1);
     }),
     element!("length_field", |ui, _| {
         length_field(ui, &mut 12.7, "in", 2);
@@ -1177,7 +1292,7 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("text_emphasis", "dialog:row:Gallery", Some("dialog:Bold"), |ui, s| {
         row(ui, "Gallery", |ui| {
-            text_emphasis(ui, &mut s.checked, &mut false);
+            text_emphasis(ui, &mut s.checked, &mut false, true);
         });
     }),
     element!("value_pair_named", "dialog:row:Position", Some("dialog:Distance X"), |ui, s| {
@@ -1220,6 +1335,13 @@ const ELEMENTS: &[Element] = &[
     element!("dropdown", "dialog:row:Gallery", Some("dialog:Gallery"), |ui, s| {
         row(ui, "Gallery", |ui| {
             dropdown(ui, "gallery", &mut s.selected, &["One", "Two"]);
+        });
+    }),
+    element!("dropdown_previews", "dialog:row:Gallery", Some("dialog:Gallery"), |ui, s| {
+        row(ui, "Gallery", |ui| {
+            dropdown_previews(ui, "gallery_previews", &mut s.selected, &["One", "Two"], |ui, index| {
+                ui.label(if index == 0 { "One" } else { "Two" });
+            });
         });
     }),
     element!("dropdown_picked", "dialog:row:Gallery", Some("dialog:Gallery"), |ui, s| {
@@ -1312,6 +1434,21 @@ const ELEMENTS: &[Element] = &[
     element!("wide_primary_button", |ui, _| {
         wide_primary_button(ui, "Finish Sketch");
     }),
+    element!("persistent_button_shape", "gallery:persistent_button", Some("gallery:persistent_button"), |ui, _| {
+        let t = Tokens::get();
+        let (rect, response) = ui.allocate_exact_size(vec2(t.form_button_height * 3.0, t.form_button_height * 2.0), egui::Sense::click());
+        ui.painter().add(persistent_button_shape(ui, &response, rect));
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Selected", crate::fonts::semibold(t.font_label), t.selected_ink);
+        scenario::publish_target("gallery:persistent_button", rect);
+    }),
+    element!("native_button_focus", "gallery:native_button_focus", Some("gallery:native_button_focus"), |ui, _| {
+        let t = Tokens::get();
+        let (rect, response) = ui.allocate_exact_size(vec2(t.form_button_height * 3.0, t.form_button_height), egui::Sense::click());
+        response.request_focus();
+        ui.painter().rect_filled(rect, t.radius_sm, t.control_fill);
+        ui.painter().add(native_button_focus(ui, &response, rect));
+        scenario::publish_target("gallery:native_button_focus", rect);
+    }),
     element!("button", "dialog:row:Gallery", Some("dialog:button:Gallery:Add"), |ui, _| {
         row(ui, "Gallery", |ui| {
             button(ui, "Add", Button::Normal);
@@ -1401,6 +1538,15 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("caption", "dialog:caption:Gallery", None, |ui, _| {
         caption(ui, "Gallery", "Construction");
+    }),
+    element!("status_line", "dialog:status:needs a joint that turns and one that slides", None, |ui, _| {
+        status_line(ui, "needs a joint that turns and one that slides", StatusTone::Dim);
+    }),
+    element!("status_line_warning", |ui, _| {
+        status_line(ui, "Pick two different components before creating a joint.", StatusTone::Warning);
+    }),
+    element!("status_line_error", |ui, _| {
+        status_line(ui, "The interference check could not finish. Check the selected bodies.", StatusTone::Error);
     }),
     element!("figure_rows", "dialog:figure:gallery", Some("dialog:Gallery"), |ui, s| {
         let Sample { value, second, .. } = s;
@@ -1628,7 +1774,7 @@ fn emphasis_and_compact_modes_keep_independent_actions_in_both_themes() {
         let mut italic = false;
         let mut selected = 0;
         let mut draw = |ui: &mut Ui| {
-            row(ui, "Style", |ui| text_emphasis(ui, &mut bold, &mut italic));
+            row(ui, "Style", |ui| text_emphasis(ui, &mut bold, &mut italic, true));
             row(ui, "Alignment", |ui| {
                 segmented(
                     ui,
@@ -1777,6 +1923,7 @@ fn gallery_covers_every_inline_element() {
         "color.rs",
         "disclosure.rs",
         "fields.rs",
+        "framing.rs",
         "layout.rs",
         "look_chain.rs",
         "menu.rs",
@@ -1795,8 +1942,8 @@ fn gallery_covers_every_inline_element() {
                 && matches!(&item.vis, syn::Visibility::Restricted(v) if v.path.is_ident("crate"))
             {
                 let name = item.sig.ident.to_string();
-                // The inherited row label is metadata, not a renderable element.
-                if name != "label" {
+                // Inherited labels, state keys and size measurements do not render elements.
+                if !matches!(name.as_str(), "eye_drag_id" | "label" | "placement_field_content_size") {
                     assert!(names.contains(name.as_str()), "{file}: {name} needs a gallery entry");
                 }
             }

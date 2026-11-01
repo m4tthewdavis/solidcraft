@@ -12,7 +12,8 @@ use solidcraft_geom::Vec3;
 use super::{CommandSpec, not_in_sketch};
 use crate::params::{UNKNOWN_COMMAND, bad, bool_, expr, expr_problem, req_expr, str_, string_list, string_list_or_default, vec2, vec3};
 use crate::schema::features::{
-    BoundingSolidParams, BoxParams, ConeParams, CylinderParams, ExtrudeParams, FeatureResult, PipeParams, ScaleParams, SphereParams, TorusParams,
+    BoundingSolidParams, BoxParams, ConeParams, CylinderParams, ExtrudeParams, FeatureResult, OffsetPlaneParams, PipeParams, PlaneAtAngleParams,
+    ScaleParams, SphereParams, TorusParams,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -26,6 +27,8 @@ const CONE_CONTRACT: TypedContract<ConeParams> = TypedContract::new();
 const PIPE_CONTRACT: TypedContract<PipeParams> = TypedContract::new();
 const BOUNDING_SOLID_CONTRACT: TypedContract<BoundingSolidParams> = TypedContract::new();
 const SCALE_CONTRACT: TypedContract<ScaleParams> = TypedContract::new();
+const OFFSET_PLANE_CONTRACT: TypedContract<OffsetPlaneParams> = TypedContract::new();
+const PLANE_AT_ANGLE_CONTRACT: TypedContract<PlaneAtAngleParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.extrude", "Extrude", crate::checked!("solid.extrude", extrude))
@@ -137,13 +140,17 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "MODIFY")
         .icon("draft")
         .params("faces: [[x,y,z] points, or face names from model.faces]; angle: expr; neutral: XY|XZ|YZ|plane name|{origin, normal}; pull?: [x,y,z] (default: neutral plane normal); body?"),
-    CommandSpec::new("construct.plane.offset", "Offset Plane", plane_offset)
+    CommandSpec::new("construct.plane.offset", "Offset Plane", crate::checked!("construct.plane.offset", plane_offset))
         .at("SOLID", "CONSTRUCT")
         .icon("plane")
+        .contract(&OFFSET_PLANE_CONTRACT)
+        .output(output_schema_for::<FeatureResult>)
         .params("base: XY|XZ|YZ|plane name, or a planar face {face: [x,y,z], body?, index?, path?}; offset: expr, or through: a point ref (vertex, sketch point, construction point) the plane goes through, parallel to base; name?"),
-    CommandSpec::new("construct.plane.at_angle", "Plane at Angle", plane_angle)
+    CommandSpec::new("construct.plane.at_angle", "Plane at Angle", crate::checked!("construct.plane.at_angle", plane_angle))
         .at("SOLID", "CONSTRUCT")
         .icon("plane_angle")
+        .contract(&PLANE_AT_ANGLE_CONTRACT)
+        .output(output_schema_for::<FeatureResult>)
         .params("base: XY|XZ|YZ|plane name, or a planar face {face: [x,y,z], body?, index?, path?}; axis: X|Y|Z|construction axis name (where it is now)|{origin, dir} | {edge|face: [x,y,z]} (a straight or circular edge, or a cylinder, cone or torus face: about its axis, followed as the model changes); angle: expr; name?"),
     CommandSpec::new("solid.split_face", "Split Face", split_face)
         .at("SOLID", "MODIFY")
@@ -639,6 +646,12 @@ pub(crate) fn profiles(p: &Value, cmd: &str) -> Result<ProfileSel> {
 
 pub(super) fn check_expr(s: &Session, e: &str, kind: Kind, cmd: &str, what: &str) -> Result<()> {
     s.doc.eval(e, kind).map(|_| ()).map_err(|err| bad(cmd, format!("{what}: {err}")))
+}
+
+/// A pattern count: a whole, unit-less number (see `expr::eval_count`).
+pub(super) fn check_count(s: &Session, e: &str, cmd: &str, what: &str) -> Result<()> {
+    let (vals, _) = s.doc.param_values();
+    solidcraft_doc::expr::eval_count(e, &vals).map(|_| ()).map_err(|err| bad(cmd, format!("{what}: {err}")))
 }
 
 /// Add a feature, evaluate, and report its result (an evaluation error fails the command).
@@ -1879,6 +1892,7 @@ fn move_body_feature(s: &mut Session, p: &Value) -> Result<Value> {
     )?;
     if copy {
         copy_keeps_appearance(s, &reply, &bodies, cmd)?;
+        super::print_face::copies_keep_print_faces(s, &reply, &bodies);
     }
     Ok(reply)
 }
@@ -1940,17 +1954,22 @@ fn named_axis_line(s: &Session, p: &Value, cmd: &str) -> Result<(Vec3, Vec3, Opt
             _ => Err(bad(cmd, "axis must be X, Y, Z, a construction axis, {origin, dir} or {edge|face: [x,y,z]}")),
         },
         Some(o @ Value::Object(_)) => {
-            let origin = match o.get("origin") {
-                None => Vec3::ZERO,
-                Some(v) => vec3(v).ok_or_else(|| {
-                    bad(cmd, "axis.origin must contain three finite numeric coordinates in millimetres; expressions are not supported")
-                })?,
-            };
-            let dir = o.get("dir").and_then(vec3).and_then(|d| d.normalized()).ok_or_else(|| bad(cmd, "axis needs a non-zero `dir`"))?;
+            let (origin, dir) = axis_line_object(o).map_err(|why| bad(cmd, why))?;
             Ok((origin, dir, None))
         }
         _ => Err(bad(cmd, "`axis` is required")),
     }
+}
+
+/// An axis line `{origin?, dir}` as [`named_axis_line`] reads it: the origin (default: the
+/// origin) and the unit direction.
+pub(crate) fn axis_line_object(o: &Value) -> std::result::Result<(Vec3, Vec3), &'static str> {
+    let origin = match o.get("origin") {
+        None => Vec3::ZERO,
+        Some(v) => vec3(v).ok_or("axis.origin must contain three finite numeric coordinates in millimetres; expressions are not supported")?,
+    };
+    let dir = o.get("dir").and_then(vec3).and_then(|d| d.normalized()).ok_or("axis needs a non-zero `dir`")?;
+    Ok((origin, dir))
 }
 
 /// A pattern feature, or for `components`, new occurrences of them at each placement.
@@ -2001,12 +2020,12 @@ fn pattern_rect(s: &mut Session, p: &Value) -> Result<Value> {
     let dir1 = p.get("dir1").and_then(vec3).ok_or_else(|| bad(cmd, "`dir1` must be [x, y, z]"))?;
     let count1 = req_expr(cmd, p, "count1")?;
     let spacing1 = req_expr(cmd, p, "spacing1")?;
-    check_expr(s, &count1, Kind::Unitless, cmd, "count1")?;
+    check_count(s, &count1, cmd, "count1")?;
     check_expr(s, &spacing1, Kind::Length, cmd, "spacing1")?;
     let dir2 = p.get("dir2").and_then(vec3);
     let (count2, spacing2) = (expr(p, "count2"), expr(p, "spacing2"));
     if let Some(c) = &count2 {
-        check_expr(s, c, Kind::Unitless, cmd, "count2")?;
+        check_count(s, c, cmd, "count2")?;
     }
     if let Some(c) = &spacing2 {
         check_expr(s, c, Kind::Length, cmd, "spacing2")?;
@@ -2031,7 +2050,7 @@ fn pattern_circ(s: &mut Session, p: &Value) -> Result<Value> {
     let (features, bodies) = pattern_sources(s, p, cmd)?;
     let (origin, axis, axis_ref, axis_feature) = axis_line(s, p, cmd)?;
     let count = req_expr(cmd, p, "count")?;
-    check_expr(s, &count, Kind::Unitless, cmd, "count")?;
+    check_count(s, &count, cmd, "count")?;
     let angle = expr(p, "angle").unwrap_or_else(|| "360 deg".into());
     check_expr(s, &angle, Kind::Angle, cmd, "angle")?;
     let pattern = solidcraft_doc::PatternKind::Circular {
@@ -2056,7 +2075,7 @@ fn pattern_path(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "`path` must list 1…1000 curve ids"));
     }
     let count = req_expr(cmd, p, "count")?;
-    check_expr(s, &count, Kind::Unitless, cmd, "count")?;
+    check_count(s, &count, cmd, "count")?;
     let (spacing, extent) = match (expr(p, "spacing"), expr(p, "distance")) {
         (Some(x), _) => (x, false),
         (None, Some(x)) => (x, true),
@@ -2080,7 +2099,12 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
     let plane = plane_param(s, p.get("plane"), cmd)?;
     let combine = bool_(p, "combine").unwrap_or(false);
     let (bodies, placements) = placed_bodies(s, bodies, cmd)?;
-    add_feature(s, p, FeatureKind::Mirror { features, plane, bodies: bodies.into_iter().map(BodyName).collect(), combine, placements })
+    let reply =
+        add_feature(s, p, FeatureKind::Mirror { features, plane, bodies: bodies.iter().cloned().map(BodyName).collect(), combine, placements })?;
+    if !combine {
+        super::print_face::copies_keep_print_faces(s, &reply, &bodies);
+    }
+    Ok(reply)
 }
 
 /// Bodies picked where the viewport shows them: each world name ("Body1", or "Body1 (Occ:2)"
@@ -2123,13 +2147,31 @@ pub(super) fn origin_plane_alias(name: &str) -> Option<&'static str> {
 /// A construction plane may not take an origin plane's name (`XY`, `Top`...): a plane
 /// parameter could then mean either.
 pub(super) fn check_plane_name(name: &str, cmd: &str) -> Result<()> {
-    if solidcraft_geom::Plane::named(name.trim()).is_some() {
-        return Err(bad(
-            cmd,
-            format!("`{}` is reserved for an origin plane (XY, XZ, YZ, Top, Front, Right); give the construction plane another name", name.trim()),
-        ));
+    match plane_name_problem(name) {
+        Some(why) => Err(bad(cmd, why)),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// What [`check_plane_name`] says about `name`, or `None` when a construction plane may take it.
+pub(crate) fn plane_name_problem(name: &str) -> Option<String> {
+    solidcraft_geom::Plane::named(name.trim()).map(|_| {
+        format!("`{}` is reserved for an origin plane (XY, XZ, YZ, Top, Front, Right); give the construction plane another name", name.trim())
+    })
+}
+
+/// The forms [`plane_param`] takes, for its messages.
+pub(crate) const PLANE_FORMS: &str =
+    "XY, XZ, YZ, a construction plane name or id, or {origin, normal} (origin coordinates may be length expressions)";
+
+/// The plane an explicit plane object gives through `origin`, as [`plane_param`] reads it: from
+/// `x_dir` and `y_dir` when both are points, else from `normal`; `None` when they don't make one.
+pub(crate) fn explicit_plane(o: &Value, origin: Vec3) -> Option<solidcraft_geom::Plane> {
+    match (o.get("x_dir").and_then(vec3), o.get("y_dir").and_then(vec3), o.get("normal").and_then(vec3)) {
+        (Some(x), Some(y), _) => solidcraft_geom::Plane::new(origin, x, y),
+        (_, _, Some(n)) => solidcraft_geom::Plane::from_normal(origin, n),
+        _ => None,
+    }
 }
 
 /// A plane reference from a parameter: an origin plane, a construction plane (by name or
@@ -2138,7 +2180,7 @@ pub(super) fn check_plane_name(name: &str, cmd: &str) -> Result<()> {
 /// plane reads it here.
 pub(super) fn plane_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<solidcraft_doc::PlaneRef> {
     use solidcraft_doc::PlaneRef;
-    const WANT: &str = "XY, XZ, YZ, a construction plane name or id, or {origin, normal} (origin coordinates may be length expressions)";
+    const WANT: &str = PLANE_FORMS;
     let construction = |r: &str| match s.doc.find_feature(r) {
         Some(f) if matches!(f.kind, FeatureKind::ConstructionPlane { .. }) => Ok(PlaneRef::Construction { feature: f.id.into() }),
         Some(f) => Err(bad(cmd, format!("`{}` is not a construction plane (a plane is {WANT})", f.name))),
@@ -2175,12 +2217,7 @@ pub(super) fn plane_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<s
             };
             let at = |e: &str| s.doc.eval(e, Kind::Length).unwrap_or(0.0);
             let here = Vec3::new(at(&origin[0]), at(&origin[1]), at(&origin[2]));
-            let pl = match (o.get("x_dir").and_then(vec3), o.get("y_dir").and_then(vec3), o.get("normal").and_then(vec3)) {
-                (Some(x), Some(y), _) => solidcraft_geom::Plane::new(here, x, y),
-                (_, _, Some(n)) => solidcraft_geom::Plane::from_normal(here, n),
-                _ => None,
-            };
-            let plane = pl.ok_or_else(|| bad(cmd, "plane needs x_dir and y_dir, or normal"))?;
+            let plane = explicit_plane(o, here).ok_or_else(|| bad(cmd, "plane needs x_dir and y_dir, or normal"))?;
             if origin.iter().all(|e| solidcraft_doc::expr::is_literal(e)) {
                 return Ok(PlaneRef::Custom { plane });
             }

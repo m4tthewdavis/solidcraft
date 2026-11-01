@@ -18,6 +18,7 @@ use solidcraft_doc::Document;
 use solidcraft_io::Format;
 
 use super::CommandSpec;
+use super::print_face;
 use crate::params::{bad, bool_, num, str_, string_list};
 use crate::{EngineError, Result, Session};
 
@@ -56,12 +57,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("file.export", "Export", export)
         .icon("export")
         .noundo()
-        .params("path; format?: stl|stla|obj|step|3mf|3mf-tagged|urdf|json (default from extension; 3mf-tagged: 3MF whose triangles carry their B-rep face, at full precision, for meshing and analysis tools; docs/formats/3mf-face-tags.md; obj: the colours of the bodies go in a material library (`.mtl`) written next to the mesh file; urdf: the whole assembly as a robot, with STL meshes written next to it; docs/urdf.md); bodies?: [names] (JSON and URDF export the complete design); urdf only: mesh_prefix? (before each mesh file name, e.g. package://robot/meshes/), effort? (default 1000), velocity? (default 10); quality?: standard|fine|finest (STL, OBJ and 3MF: how closely the mesh follows curved faces, a chord tolerance of 2e-4, 5e-5 or 1e-5 of each body's size; default standard)"),
+        .params("path; format?: stl|stla|obj|step|3mf|3mf-tagged|urdf|json (default from extension; 3mf-tagged: 3MF whose triangles carry their B-rep face, at full precision, for meshing and analysis tools; docs/formats/3mf-face-tags.md; obj: the colours of the bodies go in a material library (`.mtl`) written next to the mesh file; urdf: the whole assembly as a robot, with STL meshes written next to it; docs/urdf.md); bodies?: [names] (JSON and URDF export the complete design); urdf only: mesh_prefix? (before each mesh file name, e.g. package://robot/meshes/), effort? (default 1000), velocity? (default 10); quality?: standard|fine|finest (STL, OBJ and 3MF: how closely the mesh follows curved faces, a chord tolerance of 2e-4, 5e-5 or 1e-5 of each body's size; default standard); objects?: body|component (3MF only: one object per body, the default, or one object for each placed component with two or more bodies, with those bodies as its parts, so a slicer loads them as one object with parts)"),
     CommandSpec::new("file.save_mesh", "Save As Mesh", save_mesh)
         .at("INSERT", "FILES")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, the program path it lists, or a program the user added under Custom… (send the saved file there, through the same steps as file.send_to_slicer: a slicer that has to be started first is waited for; may be deprecated later in favour of file.send_to_slicer or a Send to App workflow, kept for scripts); single_instance?: bool (default true; see file.send_to_slicer); quality?: standard|fine|finest (STL, OBJ and 3MF: how closely the mesh follows curved faces, a chord tolerance of 2e-4, 5e-5 or 1e-5 of each body's size; default standard)"),
+        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, the program path it lists, or a program the user added under Custom… (send the saved file there, through the same steps as file.send_to_slicer: a slicer that has to be started first is waited for; may be deprecated later in favour of file.send_to_slicer or a Send to App workflow, kept for scripts); single_instance?: bool (default true; see file.send_to_slicer); quality?: standard|fine|finest (STL, OBJ and 3MF: how closely the mesh follows curved faces, a chord tolerance of 2e-4, 5e-5 or 1e-5 of each body's size; default standard); objects?: body|component (3MF only: one object per body, the default, or one object for each placed component with two or more bodies, with those bodies as its parts, so a slicer loads them as one object with parts)"),
     CommandSpec::new("file.send_to_slicer", "Send to Slicer", send_to_slicer)
         .enabled(starts_programs)
         .at("INSERT", "FILES")
@@ -80,6 +81,8 @@ pub static COMMANDS: &[CommandSpec] = &[
 fn new_doc(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_(p, "name").unwrap_or("Untitled");
     s.replace_design(Session::new(Document::new(name)));
+    // A name given here is the user's own, so Save As keeps it (#4907); "Untitled" is none.
+    s.user_named = !name.trim().is_empty() && name.trim() != DEFAULT_NAME;
     Ok(json!({"name": name}))
 }
 
@@ -369,17 +372,22 @@ fn default_name_for(name: &str, path: &str) -> Option<String> {
     (!stem.is_empty()).then_some(stem)
 }
 
-/// The name a design takes when saved to `path`, if it changes: its file's name while it has
-/// none of its own ([`default_name_for`]), or while it still has the name it took from the file
-/// it was saved as before, so Save As under another name renames it too (#1710). A name the
-/// user chose is kept.
-fn saved_name(name: &str, old_path: Option<&str>, path: &str) -> Option<String> {
+/// The name a design takes when saved to `path`, if it changes. A design with no name of its
+/// own takes the file's ([`default_name_for`]). Otherwise a name the user chose is kept, while
+/// a borrowed one — taken from the file it was saved as before (#1710), from a sample, or from
+/// a file that stored another design's name — follows a Save As to the new file's name, so
+/// after Save As the open design *is* the new file (#4907). A plain Save to the same file
+/// never renames.
+fn saved_name(name: &str, old_path: Option<&str>, path: &str, user_named: bool) -> Option<String> {
     if let Some(stem) = default_name_for(name, path) {
         return Some(stem);
     }
+    if user_named {
+        return None;
+    }
     let stem = |p: &str| std::path::Path::new(p).file_stem().map(|x| x.to_string_lossy().trim().to_string()).filter(|x| !x.is_empty());
-    let (old, new) = (stem(old_path?)?, stem(path)?);
-    (name.trim() == old && new != old).then_some(new)
+    let new = stem(path)?;
+    (old_path != Some(path) && name.trim() != new).then_some(new)
 }
 
 /// Rename the design, and the undo and redo states that still carry the old name, so undo
@@ -416,9 +424,9 @@ fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: 
             )));
         }
     }
-    // Saving an unnamed design, or one named after the file it was saved as, names it after its
-    // file (not an undoable edit).
-    let renamed = saved_name(&s.doc.name, s.path.as_deref(), path).map(|stem| (s.doc.name.clone(), stem));
+    // Saving an unnamed or borrowed-named design to a new file names it after that file
+    // (not an undoable edit); a name the user chose is kept (#4907).
+    let renamed = saved_name(&s.doc.name, s.path.as_deref(), path, s.user_named).map(|stem| (s.doc.name.clone(), stem));
     if let Some((from, to)) = &renamed {
         rename_design(s, from, to);
     }
@@ -469,6 +477,14 @@ impl Session {
         super::component_link::resolve_design_links(&mut doc, path);
         let mut session = Self::opened(doc, saved);
         session.path = path.map(str::to_owned);
+        // A design saved before body names were pinned (#6403) is pinned now, as its first
+        // command would pin it: that command pinned them as part of itself, so undoing it went
+        // back to the unpinned design, whose fingerprints no evaluated result matched, and the
+        // first undo after opening evaluated the whole timeline again (82-93 s in a
+        // 5,484-feature design). The pinned names are the ones the file's bodies have, so
+        // opening is no change: the pinned design is the saved one.
+        session.pin_body_names();
+        session.saved = session.doc.clone();
         session
     }
 
@@ -618,7 +634,52 @@ fn mesh_quality(p: &Value, cmd: &str) -> Result<solidcraft_io::MeshQuality> {
     }
 }
 
-fn export_to(s: &Session, path: &str, format: Format, bodies: &[String], quality: solidcraft_io::MeshQuality) -> Result<Value> {
+/// The 3MF parts a mesh export's `objects` asks for (#8139): none for `body` (the default, one
+/// object per body), or for `component` one part per placement of a component with two or more
+/// bodies ([`component_parts`]). Other formats have no parts, so `component` is refused there.
+pub(super) fn mesh_parts(s: &Session, p: &Value, cmd: &str, format: Format) -> Result<Vec<(String, Vec<String>)>> {
+    match p.get("objects") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(v) => match v.as_str() {
+            Some("body") => Ok(Vec::new()),
+            Some("component") if matches!(format, Format::ThreeMf | Format::ThreeMfTagged) => Ok(component_parts(s)),
+            Some("component") => Err(bad(cmd, "`objects: component` is for 3MF: other formats have no parts")),
+            _ => Err(bad(cmd, format!("`objects` must be body or component, not {v}"))),
+        },
+    }
+}
+
+/// Each placement of a component that holds two or more bodies, by its occurrence's name, with
+/// the names its bodies have where they are placed (as the export names them). The design's own
+/// bodies and a component's single body are left out: they stay objects of their own.
+fn component_parts(s: &Session) -> Vec<(String, Vec<String>)> {
+    let doc = &s.doc;
+    if doc.occurrences.is_empty() {
+        return Vec::new();
+    }
+    let st = s.model.state();
+    let owners = doc.model_body_components(&st);
+    let names = solidcraft_doc::WorldNames::new(doc, &st);
+    doc.placements()
+        .into_iter()
+        .filter(|(comp, _, _)| *comp != 0)
+        .filter_map(|(comp, path, _)| {
+            let bodies: Vec<String> =
+                st.bodies.iter().zip(&owners).filter(|(_, owner)| **owner == comp).map(|(b, _)| names.name(&b.name, comp, &path)).collect();
+            let name = path.last().and_then(|id| doc.occurrences.iter().find(|o| o.id == *id)).map(|o| o.name.clone()).unwrap_or_default();
+            (bodies.len() >= 2).then_some((name, bodies))
+        })
+        .collect()
+}
+
+fn export_to(
+    s: &Session,
+    path: &str,
+    format: Format,
+    bodies: &[String],
+    parts: &[(String, Vec<String>)],
+    quality: solidcraft_io::MeshQuality,
+) -> Result<Value> {
     if format == Format::Obj {
         // The colours of the bodies go in a material library beside the mesh file.
         return export_obj(s, path, bodies, quality);
@@ -635,10 +696,30 @@ fn export_to(s: &Session, path: &str, format: Format, bodies: &[String], quality
     } else {
         // Bodies carry the colour they are shown in (appearance, material or imported), and the
         // file the design's properties where the format has a place for them.
-        solidcraft_io::export_with_quality(&s.doc.painted(&s.world_state()), bodies, format, &name, &s.doc.metadata, quality)?
+        solidcraft_io::export_with_parts(&s.doc.painted(&s.world_state()), bodies, parts, format, &name, &s.doc.metadata, quality)?
     };
     solidcraft_io::vfs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "bytes": bytes.len(), "format": format!("{format:?}")}))
+}
+
+/// [`export_to`] for a mesh file a slicer is sent (STL or 3MF): each body laid on its print face.
+#[cfg(not(target_arch = "wasm32"))]
+fn export_laid_to(
+    s: &Session,
+    path: &str,
+    format: Format,
+    bodies: &[String],
+    parts: &[(String, Vec<String>)],
+    quality: solidcraft_io::MeshQuality,
+) -> Result<Value> {
+    let name = std::path::Path::new(path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| s.doc.name.clone());
+    let mut state = s.doc.painted(&s.world_state());
+    let laid = print_face::lay_on_print_faces(s, &mut state, bodies, parts);
+    let bytes = solidcraft_io::export_with_parts(&state, bodies, parts, format, &name, &s.doc.metadata, quality)?;
+    solidcraft_io::vfs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let mut out = json!({"path": path, "bytes": bytes.len(), "format": format!("{format:?}")});
+    laid.report(&mut out);
+    Ok(out)
 }
 
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
@@ -649,7 +730,8 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         return export_urdf(s, path, p);
     }
     let quality = mesh_quality(p, cmd)?;
-    export_to(s, path, format, &string_list(cmd, p, "bodies")?, quality)
+    let parts = mesh_parts(s, p, cmd, format)?;
+    export_to(s, path, format, &string_list(cmd, p, "bodies")?, &parts, quality)
 }
 
 /// The OBJ export: the mesh file and the material library beside it, with the colours of the
@@ -755,10 +837,11 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     // and may be deprecated later in favour of `file.send_to_slicer` or a Send to App workflow; that is
     // a possibility, not a plan.
     let quality = mesh_quality(p, cmd)?;
+    let parts = mesh_parts(s, p, cmd, format)?;
     if let Some(spec) = str_(p, "slicer") {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = spec;
+            let _ = (spec, parts);
             return Err(bad(cmd, "a slicer can't be started from the browser"));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -769,6 +852,7 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
                 kind: crate::slicers::TargetKind::Slicer,
                 spec,
                 bodies: string_list(cmd, p, "bodies")?,
+                parts,
                 format,
                 quality,
                 dest: send::Dest::Path(path),
@@ -777,7 +861,7 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
             },
         );
     }
-    export_to(s, path, format, &string_list(cmd, p, "bodies")?, quality)
+    export_to(s, path, format, &string_list(cmd, p, "bodies")?, &parts, quality)
 }
 
 /// The browser build can't start a program.
@@ -811,6 +895,7 @@ fn send_to_slicer(s: &mut Session, p: &Value) -> Result<Value> {
                 kind: crate::slicers::TargetKind::Slicer,
                 spec,
                 bodies: string_list(cmd, p, "bodies")?,
+                parts: Vec::new(),
                 format,
                 quality: Default::default(),
                 dest: send::Dest::Folder,
@@ -882,6 +967,62 @@ mod urdf_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #8139: with `objects: "component"` a 3MF has one object for each placement of a component
+    /// with two or more bodies, its bodies the object's parts; the design's own bodies stay objects
+    /// of their own. The default (and `objects: "body"`) is one object per body, as before. Read
+    /// back, an object with parts is one mesh with all its parts' triangles.
+    #[test]
+    fn a_components_bodies_export_to_3mf_as_one_object_with_parts() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-3mf-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |n: &str| dir.join(n).to_string_lossy().to_string();
+        let read = |p: &str| -> Vec<(String, usize)> {
+            let (objects, warnings) = solidcraft_io::read_3mf(&std::fs::read(p).unwrap()).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            objects.iter().map(|o| (o.name.clone(), o.triangles.len())).collect()
+        };
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10, "corner": [-30, 0, 0], "body_name": "Loose"})).unwrap();
+        s.execute("component.create", &json!({"name": "Bracket"})).unwrap();
+        s.execute("solid.box", &json!({"length": 20, "width": 20, "height": 10, "body_name": "Base"})).unwrap();
+        s.execute("solid.cylinder", &json!({"radius": 5, "height": 10, "base": [10, 10, 10], "operation": "new", "body_name": "Boss"})).unwrap();
+        s.execute("component.activate", &json!({"component": "root"})).unwrap();
+
+        s.execute("file.export", &json!({"path": path("bodies.3mf")})).unwrap();
+        let bodies = read(&path("bodies.3mf"));
+        assert_eq!(bodies.len(), 3, "one object per body: {bodies:?}");
+        s.execute("file.export", &json!({"path": path("body.3mf"), "objects": "body"})).unwrap();
+        assert_eq!(read(&path("body.3mf")), bodies);
+        let loose = bodies.iter().find(|(n, _)| n == "Loose").map(|(_, t)| *t).unwrap_or(0);
+        let bracket: usize = bodies.iter().filter(|(n, _)| n != "Loose").map(|(_, t)| t).sum();
+
+        s.execute("file.export", &json!({"path": path("parts.3mf"), "objects": "component"})).unwrap();
+        let parts = read(&path("parts.3mf"));
+        assert_eq!(parts, [("Loose".to_string(), loose), ("Bracket:1".to_string(), bracket)], "{bodies:?}");
+        s.execute("file.save_mesh", &json!({"path": path("saved.3mf"), "objects": "component"})).unwrap();
+        assert_eq!(read(&path("saved.3mf")), parts);
+        s.execute("file.export", &json!({"path": path("tagged.3mf"), "format": "3mf-tagged", "objects": "component"})).unwrap();
+        assert_eq!(read(&path("tagged.3mf")), parts);
+
+        // Placed again, each placement is an object of its own.
+        s.execute("occurrence.copy", &json!({"component": "Bracket", "translate": [0, 40, 0]})).unwrap();
+        s.execute("file.export", &json!({"path": path("two.3mf"), "objects": "component"})).unwrap();
+        let two = read(&path("two.3mf"));
+        assert_eq!(two, [("Loose".to_string(), loose), ("Bracket:1".to_string(), bracket), ("Bracket:2".to_string(), bracket)]);
+
+        // Other formats have no parts, and `objects` is body or component.
+        let e = s.execute("file.export", &json!({"path": path("parts.stl"), "objects": "component"})).unwrap_err().to_string();
+        assert!(e.contains("`objects: component` is for 3MF"), "{e}");
+        let e = s.execute("file.save_mesh", &json!({"path": path("parts.stl"), "objects": "component"})).unwrap_err().to_string();
+        assert!(e.contains("`objects: component` is for 3MF"), "{e}");
+        for bad in [json!("parts"), json!(true), json!(2)] {
+            let e = s.execute("file.export", &json!({"path": path("bad.3mf"), "objects": bad})).unwrap_err().to_string();
+            assert!(e.contains("`objects` must be body or component"), "{bad}: {e}");
+        }
+        assert!(!std::path::Path::new(&path("parts.stl")).exists() && !std::path::Path::new(&path("bad.3mf")).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// #4747: a mesh export's `quality` follows curved faces more closely. A 3 mm hole in a
     /// 200 mm plate gets more triangles at fine and more again at finest, in STL and 3MF alike
@@ -1343,6 +1484,51 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// #9170: a design holding a mesh body (an inserted STL) keeps its saved model and opens from
+    /// it. One mesh body left the cache out for the whole model, so every feature, the boxes
+    /// too, was evaluated again on opening.
+    #[test]
+    fn a_design_with_a_mesh_body_keeps_its_saved_model() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-mesh-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("tetra.stl");
+        let facets = [
+            [[0, 0, 0], [0, 10, 0], [10, 0, 0]],
+            [[0, 0, 0], [10, 0, 0], [0, 0, 10]],
+            [[0, 0, 0], [0, 0, 10], [0, 10, 0]],
+            [[10, 0, 0], [0, 10, 0], [0, 0, 10]],
+        ];
+        let mut text = String::from("solid tetra\n");
+        for f in facets {
+            text += "facet normal 0 0 0\nouter loop\n";
+            for [x, y, z] in f {
+                text += &format!("vertex {x} {y} {z}\n");
+            }
+            text += "endloop\nendfacet\n";
+        }
+        std::fs::write(&stl, text + "endsolid tetra\n").unwrap();
+        let mut session = Session::new(Document::new("Boxes and a mesh"));
+        for x in [0, 40, 80] {
+            session.execute("solid.box", &json!({"length": 20, "width": 20, "height": 20, "corner": [x, 0, 0], "operation": "new_body"})).unwrap();
+        }
+        session.execute("file.insert_mesh", &json!({"path": stl})).unwrap();
+        let triangles = |s: &Session| s.model.state().bodies.iter().filter_map(|b| b.body.triangle_mesh().map(|(_, t)| t.len())).collect::<Vec<_>>();
+        assert_eq!(triangles(&session), [4], "one mesh body");
+        let bytes = session.design_container(solidcraft_io::DesignCompression::Fast, false, true).unwrap();
+        assert!(solidcraft_io::read_design_geometry(&bytes).is_some(), "the model is saved with the mesh body");
+        let path = dir.join("boxes-mesh.solidcraft");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut reopened = Session::default();
+        reopened.execute("doc.open", &json!({"path": path})).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(reopened.model.results.len(), session.model.results.len());
+        assert!(reopened.model.results.iter().zip(&session.model.results).all(|(a, b)| a.ms == b.ms), "taken from the file, not evaluated");
+        assert_eq!(triangles(&reopened), [4]);
+        let volume = |s: &mut Session| s.execute("inspect.measure", &json!({})).unwrap()["total"]["volume_mm3"].as_f64().unwrap();
+        let (saved, opened) = (volume(&mut session), volume(&mut reopened));
+        assert!((opened - saved).abs() < 1e-9 && (saved - (3. * 8000. + 1000. / 6.)).abs() < 1e-6, "{opened} vs {saved}");
+    }
+
     /// A sheet-metal design keeps each sheet body once in its saved model, not again with every
     /// later feature's state: a design of many features after its sheet metal wrote the sheets
     /// over and over, and past the cache's size limit kept only some of its states.
@@ -1383,6 +1569,54 @@ mod tests {
         reopened.execute("doc.open", &json!({"path":path})).unwrap();
         assert!(reopened.model.results.iter().zip(&many.model.results).all(|(a, b)| a.ms == b.ms), "taken from the file, not evaluated");
         assert_eq!(serde_json::to_value(&reopened.model.state().sheets).unwrap(), serde_json::to_value(&flat).unwrap());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// A design's saved model keeps each set of sketch keys once, not again with every state:
+    /// every state wrote the key of each sketch before it, so a design of many sketches and many
+    /// features after them (5,484 features) passed the cache's size limit and kept only some of
+    /// its states. A set is written as the changes from the one before it; the model opens from
+    /// the file with every state (the keys read back: `eval_cost_tests`).
+    #[test]
+    fn a_saved_model_keeps_each_set_of_sketch_keys_once() {
+        let mut s = Session::new(Document::new("Sketches"));
+        let run = |s: &mut Session, id: &str, p: Value| s.execute(id, &p).unwrap();
+        for i in 0..6 {
+            run(&mut s, "sketch.create", json!({"plane":"XY","name":format!("Pad{i}")}));
+            run(&mut s, "sketch.rectangle.two_point", json!({"p0":[20 * i,0],"p1":[20 * i + 10,10]}));
+            run(&mut s, "solid.extrude", json!({"distance":5,"operation":"new"}));
+        }
+        for i in 0..10 {
+            run(&mut s, "solid.box", json!({"length":5,"width":5,"height":5,"corner":[20 * i,40,0],"operation":"new"}));
+        }
+        let saved = saved_geometry(&s, &s.doc).unwrap();
+        let features = saved.records["features"].as_array().unwrap();
+        assert_eq!(features.len(), s.doc.features.len());
+        assert!(features.iter().all(|f| f.get("state").is_some()), "every state kept");
+        let states = saved.records["states"].as_array().unwrap();
+        let sets = saved.records["sketch_key_sets"].as_array().unwrap();
+        // One set per sketch: each later one adds that sketch's key to the one before it.
+        assert_eq!(sets.len(), 6, "{sets:?}");
+        assert_eq!(sets[0]["set"].as_array().unwrap().len(), 1);
+        for (i, set) in sets.iter().enumerate().skip(1) {
+            assert_eq!(
+                (set["base"].as_u64(), set["set"].as_array().unwrap().len(), set["drop"].as_array().unwrap().len()),
+                (Some(i as u64 - 1), 1, 0)
+            );
+        }
+        let last = sets.len() - 1;
+        assert_eq!(
+            states.iter().filter(|st| st["sketch_key_set"] == json!(last)).count(),
+            2 + 10,
+            "the last sketch, its extrude and every box share one set"
+        );
+        let path = std::env::temp_dir().join(format!("solidcraft-sketch-key-cache-{}.solidcraft", std::process::id()));
+        let bytes = solidcraft_io::write_design_container_with_cache(&s.doc, solidcraft_io::DesignCompression::Fast, None, Some(&saved)).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let mut reopened = Session::default();
+        reopened.execute("doc.open", &json!({"path": path})).unwrap();
+        assert_eq!(reopened.model.last_recomputed, 0, "taken from the file, not evaluated");
+        assert!(reopened.model.results.iter().zip(&s.model.results).all(|(a, b)| a.ms == b.ms));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1498,6 +1732,44 @@ mod tests {
         let mut reopened = Session::default();
         reopened.execute("doc.open", &json!({"path":dir.join("lid-v2.solidcraft")})).unwrap();
         assert_eq!(reopened.doc.name, "Gearbox lid");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// #4907: after Save As the open design *is* the new file — tab, browser and the name stored
+    /// in the file — whenever its name didn't come from its current file: a sample's name, or a
+    /// file renamed outside SolidCraft or named by someone else. A plain Save never renames.
+    #[test]
+    fn save_as_names_a_borrowed_name_after_the_new_file() {
+        let dir = name_dir("borrowed");
+        // The issue's steps: the sample "Sample Plate" saved as "Bracket v2.solidcraft".
+        let mut s = Session::default();
+        s.doc_mut().name = "Sample Plate".into();
+        s.execute("solid.box", &json!({"length":10,"width":20,"height":30})).unwrap();
+        let path = dir.join("Bracket v2.solidcraft");
+        let r = s.execute("file.save_as", &json!({"path":path})).unwrap();
+        assert_eq!(r["name"], "Bracket v2");
+        assert_eq!(s.doc.name, "Bracket v2");
+        assert!(!s.is_dirty(), "taking the new file's name is part of the save");
+        assert_eq!(solidcraft_io::read_design(&std::fs::read(&path).unwrap()).unwrap().name, "Bracket v2");
+        // Undoing the box does not bring the sample's name back.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc.name, "Bracket v2");
+        // Reopening shows the new name too.
+        let mut reopened = Session::default();
+        reopened.execute("doc.open", &json!({"path":path})).unwrap();
+        assert_eq!(reopened.doc.name, "Bracket v2");
+        // A file whose stored name is not its own (renamed outside SolidCraft, or saved by a
+        // version before #1710): Save As names the design after the new file, while a plain
+        // Save to the file it has leaves the name alone.
+        let odd = dir.join("renamed.solidcraft");
+        std::fs::write(&odd, solidcraft_io::write_design(&Document::new("Sample Plate"))).unwrap();
+        let mut s = Session::default();
+        s.execute("doc.open", &json!({"path":odd})).unwrap();
+        assert_eq!(s.doc.name, "Sample Plate");
+        s.execute("file.save", &json!({})).unwrap();
+        assert_eq!(s.doc.name, "Sample Plate", "a plain Save does not rename behind the user's back");
+        s.execute("file.save_as", &json!({"path":dir.join("Bracket v3.solidcraft")})).unwrap();
+        assert_eq!(s.doc.name, "Bracket v3");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
