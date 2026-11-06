@@ -3,6 +3,7 @@
 //! body or face in the viewport, or onto a body's row in the Browser, applies at once; Apply
 //! (and OK) gives the picked objects the current look.
 
+use crate::ui_kit::BackingTooltipExt as _;
 use egui::Color32;
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
@@ -199,7 +200,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     (id == "appearance.assign").then(|| {
         let faces = app.session.selection.iter().any(|s| matches!(s, Sel::Face { .. }))
             && !app.session.selection.iter().any(|s| matches!(s, Sel::Body { .. }));
-        let state = app.session.world_state();
+        let state = crate::open_meshing::session_world(&app.session);
         let body_look = |body: &solidcraft_engine::doc::ModelBody| {
             app.session.doc.model_body_look(body).or_else(|| {
                 (body.body.paint().is_some() || body.imported.is_some() || body.body.color().is_some()).then(|| {
@@ -398,9 +399,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
         }
     }
     ui_kit::row(ui, "Colour", |ui| {
-        let mut rgb = k.color;
-        if ui_kit::color_field(ui, &mut rgb).changed() {
-            k.color = rgb;
+        let response =
+            if k.pbr.is_none() { ui_kit::color_field_with_opacity(ui, &mut k.color, &mut k.opacity) } else { ui_kit::color_field(ui, &mut k.color) };
+        if response.changed() {
             detach_preset(k);
             k.look = None;
             k.remove_override = false;
@@ -415,7 +416,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
     });
     let mut enabled = k.pbr.is_some();
     let toggle = ui_kit::row(ui, app.tr("appearance.surface_response"), |ui| ui_kit::checkbox(ui, app.tr("appearance.pbr_opaque"), &mut enabled))
-        .on_hover_text(app.tr("appearance.pbr_help"));
+        .backing_on_hover_text(app.tr("appearance.pbr_help"));
     crate::scenario::publish_handle("appearance:pbr", toggle.rect.center());
     if toggle.changed() {
         detach_preset(k);
@@ -461,7 +462,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
             });
         }
         if ui_kit::button(ui, "Remove override", ui_kit::Button::Enabled(has_target))
-            .on_hover_text(crate::i18n::tr_label("Restore the inherited component or physical material appearance"))
+            .backing_on_hover_text(crate::i18n::tr_label("Restore the inherited component or physical material appearance"))
             .clicked()
             && let Some(p) = clear_params(k, &picked)
         {
@@ -484,7 +485,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
             ui_kit::swatch_grid(ui, &items, |ui, (i, (look, n))| {
                 if ui_kit::color_swatch(
                     ui,
-                    egui::Id::new(("ap_used", *i)),
+                    egui::Id::unique(("ap_used", *i)),
                     c32(look.color, look.opacity),
                     k.color == look.color && k.opacity == look.opacity && k.pbr == look.pbr,
                     &format!("{} · {n} item(s)", look.name),
@@ -532,7 +533,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
             |p| format!("{}\n{}\n{}", l.name, p.preview_note, p.requirements.join(", ")),
         );
         ui.add_enabled_ui(available, |ui| {
-            let response = ui_kit::color_swatch(ui, egui::Id::new(("ap_lib", *i)), c32(l.color, l.opacity), picked_look, &tip, (*l).clone());
+            let response = ui_kit::color_swatch(ui, egui::Id::unique(("ap_lib", *i)), c32(l.color, l.opacity), picked_look, &tip, (*l).clone());
             if let Some(preset) = &l.preset {
                 crate::scenario::publish_handle(&format!("appearance:preset:{}", preset.id), response.rect.center());
             }
@@ -543,7 +544,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
             }
         })
         .response
-        .on_hover_text(tip);
+        .backing_on_hover_text(tip);
     });
     // A swatch dropped on the model or the Browser.
     let released = ui.input(|i| i.pointer.any_released());
@@ -592,8 +593,8 @@ fn target_names(targets: &[Sel]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use solidcore_record::Vec3;
     use solidcraft_engine::Session;
-    use solidcraft_engine::geom::Vec3;
 
     use super::*;
     use crate::Services;
@@ -765,6 +766,69 @@ mod tests {
             assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
             assert_eq!(h.app.session.doc.appearances.bodies["Body1"].opacity, 0.123456);
         }
+    }
+
+    #[test]
+    fn hex_picker_preserves_precise_opacity_and_applies_alpha_without_losing_rgb_or_pbr() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+        h.app.run("appearance.assign", json!({"bodies":["Body1"],"color":"#abcdef","opacity":0.123456,"appearance":"Named tint"})).unwrap();
+        h.app.session.selection = vec![Sel::Body { name: "Body1".into() }];
+        h.app.start("appearance.assign");
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"dialog:color:Colour"}})).unwrap();
+        for mode in ["Hex", "F", "U8", "Hex"] {
+            h.step(&json!({"click":{"handle":format!("color:format:{mode}")}})).unwrap();
+            let Kind::Appearance(k) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance editor") };
+            assert_eq!((k.color, k.opacity, k.look.as_deref()), ([171, 205, 239], 0.123456, Some("Named tint")));
+        }
+        let paste = |h: &mut crate::scenario::Harness, text: &str| {
+            h.step(&json!({"click":{"handle":"color:hex"}})).unwrap();
+            h.step(&json!({"key":"A","cmd":true,"ctrl":true})).unwrap();
+            h.frame_with(vec![egui::Event::Paste(text.into())]);
+        };
+        for text in ["#abc", "#abcdefz0"] {
+            paste(&mut h, text);
+            h.frames(2);
+            let Kind::Appearance(k) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance editor") };
+            assert_eq!((k.color, k.opacity, k.look.as_deref()), ([171, 205, 239], 0.123456, Some("Named tint")));
+            assert!(h.widget(text).is_some(), "invalid text remains editable");
+        }
+        for (text, color, opacity) in [
+            ("#AbCdEf", [171, 205, 239], 0.123456),
+            ("#AbCdEf80", [171, 205, 239], 128.0 / 255.0),
+            ("#0102fe00", [1, 2, 254], 0.0),
+            ("#fE8001", [254, 128, 1], 0.0),
+        ] {
+            paste(&mut h, text);
+            let Kind::Appearance(k) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance editor") };
+            assert_eq!((k.color, k.opacity), (color, opacity), "{text} applies immediately without premultiplying RGB");
+            if text == "#AbCdEf" {
+                assert_eq!(k.look.as_deref(), Some("Named tint"), "re-entering unchanged RGB is not a manual colour change");
+            }
+            if text.len() == 9 {
+                assert!(k.look.is_none() && k.preset_id.is_none(), "an alpha-only colour edit also detaches the named look");
+            }
+        }
+        let copy = crate::scenario::handle_at("color:copy").unwrap();
+        h.frame_with(crate::test_support::pointer(copy, true));
+        h.frame_with(crate::test_support::pointer(copy, false));
+        assert!(
+            h.output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text.eq_ignore_ascii_case("#fe8001")))
+        );
+        let Kind::Appearance(k) = &mut h.app.dialog.as_mut().unwrap().kind else { panic!("appearance editor") };
+        k.opacity = 0.25;
+        h.frames(2);
+        assert!(h.widget("#fe800140").is_some(), "external opacity edits synchronise the displayed Hex text");
+        h.step(&json!({"click":{"handle":"dialog:color:Colour"}})).unwrap();
+        h.step(&json!({"click":{"handle":"appearance:pbr"}})).unwrap();
+        h.step(&json!({"click":{"handle":"dialog:color:Colour"}})).unwrap();
+        paste(&mut h, "#22334480");
+        let Kind::Appearance(k) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance editor") };
+        assert_eq!((k.color, k.opacity, k.pbr), ([254, 128, 1], 1.0, Some(PbrParameters::default())));
+        paste(&mut h, "#223344ff");
+        let Kind::Appearance(k) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance editor") };
+        assert_eq!((k.color, k.opacity, k.pbr), ([34, 51, 68], 1.0, Some(PbrParameters::default())));
     }
 
     #[test]

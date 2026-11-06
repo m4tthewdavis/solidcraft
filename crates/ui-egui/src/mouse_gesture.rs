@@ -521,10 +521,13 @@ fn paint_open(app: &SolveApp, ctx: &egui::Context) {
     let t = Tokens::get();
     let pointer = ctx.input(|i| i.pointer.latest_pos());
     let area = Rect::from_center_size(wheel.centre, vec2(2.0 * (RING + 6.0), 2.0 * (RING + 6.0)));
-    Container::new(ctx, Surface::Canvas).area(egui::Id::new("sc_mouse_gesture")).fixed_pos(area.min).order(egui::Order::Foreground).show(ctx, |ui| {
-        let (r, _) = ui.allocate_exact_size(area.size(), Sense::hover());
-        paint(&ui.painter_at(r.expand(4.0)), wheel.centre, 1.0, wheel.studio, &list, pointer, t);
-    });
+    Container::new(ctx, Surface::Canvas).area(egui::Id::unique("sc_mouse_gesture")).fixed_pos(area.min).order(egui::Order::Foreground).show(
+        ctx,
+        |ui| {
+            let (r, _) = ui.allocate_exact_size(area.size(), Sense::hover());
+            paint(&ui.painter_at(r.expand(4.0)), wheel.centre, 1.0, wheel.studio, &list, pointer, t);
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -609,8 +612,7 @@ pub(crate) fn nav_rows(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 crate::ui_kit::Text::Hint("mouse_gesture_mode"),
             );
             if crate::ui_kit::button(ui, crate::i18n::tr_label("Use the SolidWorks mouse mode"), crate::ui_kit::Button::Normal).clicked() {
-                app.preferences.nav = MOUSE_MODE.to_string();
-                app.preferences.zoom_reverse = crate::prefs::nav_preset(MOUSE_MODE).reverse_zoom;
+                crate::prefs::choose_nav_preset(&mut app.preferences, crate::prefs::nav_preset(MOUSE_MODE));
             }
         } else if app.preferences.mouse_gestures.enabled {
             crate::ui_kit::text(
@@ -633,7 +635,7 @@ fn editor(app: &mut SolveApp, ctx: &egui::Context) {
     let t = Tokens::get();
     let mut studio = app.gesture.editor.studio;
     let mut config = app.preferences.mouse_gestures.clone();
-    let closed = crate::ui_kit::Window::new(egui::Id::new("sc_gesture_editor"), "settings", crate::i18n::tr_label("Mouse gestures"))
+    let closed = crate::ui_kit::Window::new(egui::Id::unique("sc_gesture_editor"), "settings", crate::i18n::tr_label("Mouse gestures"))
         .cards(3.0)
         .show_body(ctx, |ui| {
             crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Ring of tools on the right button"), &mut config.enabled);
@@ -689,7 +691,7 @@ fn editor(app: &mut SolveApp, ctx: &egui::Context) {
                                     &shown,
                                     egui::PopupCloseBehavior::CloseOnClickOutside,
                                     |ui| {
-                                        let filter_id = ui.id().with("filter");
+                                        let filter_id = ui.scope_id().with("filter");
                                         let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
                                         crate::ui_kit::text_field(ui, &mut filter, crate::i18n::tr_label("Filter…"));
                                         ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
@@ -1154,7 +1156,7 @@ mod tests {
         let mut app = app();
         assert!(!active(&app), "off by default");
         app.preferences.mouse_gestures.enabled = true;
-        for nav in ["fusion", "inventor", "alias", "blender", "tinkercad", "openscad", "touchpad"] {
+        for nav in ["fusion", "creo", "inventor", "alias", "blender", "tinkercad", "openscad", "touchpad"] {
             app.preferences.nav = nav.into();
             assert!(!active(&app), "{nav}: gestures only work with the SolidWorks mouse mode");
         }

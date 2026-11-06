@@ -5,6 +5,85 @@ use crate::scenario;
 use egui::Ui;
 
 #[test]
+fn segmented_allocates_only_its_reserved_row() {
+    for layout in [egui::Layout::top_down(egui::Align::Min), egui::Layout::left_to_right(egui::Align::Center)] {
+        for width in [160.0, 320.0, 640.0] {
+            for enabled in [&[][..], &[true, false, true, false][..], &[false; 4][..]] {
+                let ctx = crate::fonts::test_context();
+                frame(&ctx, vec![], |ui| {
+                    let bounds = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, 120.0));
+                    let builder = || egui::UiBuilder::new().max_rect(bounds).layout(layout);
+                    let mut expected = ui.new_child(builder());
+                    let mut actual = ui.new_child(builder());
+                    expected.allocate_exact_size(egui::vec2(width, row_height()), egui::Sense::hover());
+                    let mut selected = 0;
+                    assert!(!segmented(&mut actual, &mut selected, &["A", "B", "C", "D"], Segments { enabled, ..Default::default() }));
+                    assert_eq!(actual.min_rect(), expected.min_rect(), "segments must not expand the parent bounds");
+                    assert_eq!(actual.cursor(), expected.cursor(), "segments must not advance the parent beyond the row");
+                    let next = egui::vec2(24.0, 20.0);
+                    assert_eq!(
+                        actual.allocate_exact_size(next, egui::Sense::hover()).0,
+                        expected.allocate_exact_size(next, egui::Sense::hover()).0,
+                        "the following control must retain its allocation"
+                    );
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn segmented_click_respects_parent_and_option_availability() {
+    for parent_enabled in [false, true] {
+        // Missing availability entries retain the enabled default.
+        for enabled in [&[][..], &[true][..], &[true, true][..], &[true, false][..]] {
+            let ctx = crate::fonts::test_context();
+            scenario::clear_handles();
+            let mut selected = 0;
+            let mut changed = false;
+            let mut draw = |ui: &mut Ui| {
+                if !parent_enabled {
+                    ui.disable();
+                }
+                row(ui, "Availability", |ui| {
+                    changed |= segmented(ui, &mut selected, &["A", "B"], Segments { enabled, ..Default::default() });
+                });
+            };
+            frame(&ctx, vec![], &mut draw);
+            let pos = scenario::handle_at("dialog:Availability:B").expect("disabled segments still publish targets");
+            frame(&ctx, pointer(pos, true), &mut draw);
+            frame(&ctx, pointer(pos, false), &mut draw);
+            let should_change = parent_enabled && enabled.get(1).copied().unwrap_or(true);
+            assert_eq!(selected, usize::from(should_change));
+            assert_eq!(changed, should_change);
+        }
+    }
+}
+
+#[test]
+fn segmented_availability_keeps_unsupported_options_visible_and_inert() {
+    let ctx = crate::fonts::test_context();
+    let mut selected = 1;
+    let mut draw = |ui: &mut Ui| {
+        row(ui, "Backdrop availability", |ui| {
+            segmented(
+                ui,
+                &mut selected,
+                &["World", "Colour", "Gradient", "Clear"],
+                Segments { enabled: &[false, true, false, true], ..Default::default() },
+            );
+        });
+    };
+    frame(&ctx, vec![], &mut draw);
+    for option in ["World", "Gradient"] {
+        let pos = scenario::handle_at(&format!("dialog:Backdrop availability:{option}")).unwrap();
+        frame(&ctx, pointer(pos, true), &mut draw);
+        frame(&ctx, pointer(pos, false), &mut draw);
+    }
+    assert_eq!(selected, 1);
+}
+
+#[test]
 fn segmented_click_changes_selection_and_keeps_all_choices_visible() {
     let ctx = crate::fonts::test_context();
     let mut selected = 0;
@@ -19,6 +98,25 @@ fn segmented_click_changes_selection_and_keeps_all_choices_visible() {
     let control = scenario::rect_of("dialog:control:Continuity").unwrap();
     for option in ["G1", "G2", "G3"] {
         assert!(control.contains(scenario::handle_at(&format!("dialog:Continuity:{option}")).unwrap()));
+    }
+}
+
+/// A segment shows its option in the user's language, as the dropdown it falls back to does, and
+/// keeps the option as passed in its handle.
+#[test]
+fn segments_show_their_options_translated() {
+    let ctx = crate::fonts::test_context();
+    let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 120.0));
+    let _japanese = crate::i18n::scope("ja");
+    let mut selected = 0;
+    let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(bounds), ..Default::default() }, |ui| {
+        row(ui, "Section", |ui| segmented(ui, &mut selected, &["Circular", "Square"], Default::default()));
+    });
+    output.textures_delta.clear();
+    let painted = |text: &str| output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(t) if t.galley.job.text == text));
+    for (option, shown) in [("Circular", "円形"), ("Square", "正方形")] {
+        assert!(painted(shown) && !painted(option), "{option} shows as {shown}");
+        assert!(scenario::handle_at(&format!("dialog:Section:{option}")).is_some(), "{option} keeps its handle");
     }
 }
 
@@ -49,7 +147,7 @@ fn optional_field_keeps_empty_default_and_options_use_two_columns() {
 /// really is too narrow.
 #[test]
 fn segments_stay_segments_when_a_scrollbar_appears_and_disappears() {
-    let options = ["Origin", "View centre", "Point under the cursor"];
+    let options = ["Origin", "View center", "Point under the cursor"];
     let solid = egui::style::ScrollStyle::solid();
     let scrollbar = solid.allocated_width();
     assert!(scrollbar > 0.0);
@@ -143,7 +241,7 @@ fn stage_chips_reserve_the_selected_weight_for_complete_labels_in_all_five_catal
                 StageBar::row(ui, bounds, false, |ui| StageBar::header(ui, selected, &labels.iter().map(String::as_str).collect::<Vec<_>>(), &[]));
             });
             output.textures_delta.clear();
-            let search = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sc_ribbon_search"))).unwrap();
+            let search = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("sc_ribbon_search"))).unwrap();
             assert!((search.right() - (bounds.right() - crate::theme::Tokens::get().space_6)).abs() < 1.0);
             for label in &labels {
                 assert!(
@@ -268,6 +366,7 @@ fn output_radio_rows_keep_titles_summaries_and_disabled_choices_in_both_themes()
                         settings_choice_row(
                             ui,
                             &SettingsChoice {
+                                icon: None,
                                 key: "test:output:radio",
                                 title: locale.text("render.size_full_hd"),
                                 summary: "1920 × 1080",
@@ -297,7 +396,7 @@ fn output_radio_rows_keep_titles_summaries_and_disabled_choices_in_both_themes()
                 ui.add_enabled_ui(enabled, |ui| {
                     clicked |= settings_choice_row(
                         ui,
-                        &SettingsChoice { key: "test:output:radio", title: "4K", summary: "3840 × 2160", detail: "Over budget" },
+                        &SettingsChoice { icon: None, key: "test:output:radio", title: "4K", summary: "3840 × 2160", detail: "Over budget" },
                         false,
                     )
                     .clicked();

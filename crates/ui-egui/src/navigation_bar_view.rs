@@ -1,7 +1,8 @@
 //! Measured single-row navigation bar. Commands own all view changes.
 use crate::navigation::NavCaps;
-use crate::navigation_bar::{self, Idle, Kind, Labels, MenuDisplay, NavigationBar, Position, Slot};
+use crate::navigation_bar::{self, Edge, Idle, Kind, Labels, MenuDisplay, NavigationBar, Position, Slot};
 use crate::theme::Tokens;
+use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{self, Container, Surface};
 use crate::{SolveApp, viewport::NavMode};
 use egui::{Align2, Rect, pos2, vec2};
@@ -88,7 +89,12 @@ fn measure_row(content: Rect, prefs: &NavigationBar, caps: NavCaps, label_width:
         Position::Left => content.left() + NAV_EDGE,
         Position::Right => content.right() - NAV_EDGE - row_width,
     };
-    result.rect = Rect::from_min_size(pos2(left, content.bottom() - height - NAV_BOTTOM), vec2(row_width, height));
+    // The same gap from either edge of the view.
+    let top = match prefs.edge {
+        navigation_bar::Edge::Bottom => content.bottom() - height - NAV_BOTTOM,
+        navigation_bar::Edge::Top => content.top() + NAV_BOTTOM,
+    };
+    result.rect = Rect::from_min_size(pos2(left, top), vec2(row_width, height));
     let mut x = left + inset;
     for slot in slots.iter().take(visible) {
         let w = width(slot, result.labels, result.values);
@@ -114,7 +120,12 @@ pub(crate) fn editor_layout(stage: Rect, prefs: &NavigationBar, label_width: imp
         Position::Centre => stage.center().x - bar.rect.width() / 2.0,
         Position::Right => stage.right() - ui_kit::NAV_BORDER - ui_kit::NAV_STAGE_INSET - bar.rect.width(),
     };
-    let delta = pos2(x, stage.center().y - bar.rect.height() / 2.0) - bar.rect.min;
+    // The same inset from the top or bottom edge as from the side, as in the live view.
+    let y = match prefs.edge {
+        navigation_bar::Edge::Top => stage.top() + ui_kit::NAV_BORDER + ui_kit::NAV_STAGE_INSET,
+        navigation_bar::Edge::Bottom => stage.bottom() - ui_kit::NAV_BORDER - ui_kit::NAV_STAGE_INSET - bar.rect.height(),
+    };
+    let delta = pos2(x, y) - bar.rect.min;
     bar.rect = bar.rect.translate(delta);
     for (_, rect) in &mut bar.slots {
         *rect = rect.translate(delta);
@@ -127,9 +138,82 @@ pub(crate) fn editor_layout(stage: Rect, prefs: &NavigationBar, label_width: imp
 
 pub(crate) fn measured(app: &SolveApp, ctx: &egui::Context, content: Rect) -> BarLayout {
     let t = Tokens::get();
-    measure(content, &app.preferences.navigation_bar, navigation_bar::canvas_caps(app), |slot| {
+    let label_width = |slot: &Slot| {
         ctx.fonts_mut(|fonts| fonts.layout_no_wrap(slot_text(app, slot).to_owned(), crate::fonts::medium(ui_kit::NAV_TEXT), t.form_ink).size().x)
-    })
+    };
+    let mut bar = measure(content, &app.preferences.navigation_bar, navigation_bar::canvas_caps(app), label_width);
+    let Some(_) = app.universal_panel_frame() else {
+        return bar;
+    };
+    if !bar.rect.is_positive() {
+        return bar;
+    }
+    let Ok(region) = crate::shell::host_usable(app) else {
+        bar.rect = Rect::NOTHING;
+        bar.slots.clear();
+        bar.more = Rect::NOTHING;
+        return bar;
+    };
+    let preferred = bar.rect.center();
+    let place = |bar: &BarLayout| {
+        region.place_footprint(
+            solidcraft_engine::panels::Size { width: bar.rect.width(), height: bar.rect.height() },
+            solidcraft_engine::panels::Point { x: preferred.x, y: preferred.y },
+            t.space_4,
+        )
+    };
+    let mut location = place(&bar);
+    if location.is_none() {
+        // Keep the existing value/label/More policy when a full row cannot fit.
+        // Measure a smaller row, then validate its complete footprint against
+        // the contour rather than anchoring it to a fictitious central strip.
+        let width = region
+            .free
+            .iter()
+            .filter(|bounds| bounds.size.height >= bar.rect.height() + 2.0 * t.space_4)
+            .map(|bounds| (bounds.size.width - 2.0 * t.space_4).max(0.0))
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0);
+        bar = measure(
+            Rect::from_min_size(content.min, vec2(width, content.height())),
+            &app.preferences.navigation_bar,
+            navigation_bar::canvas_caps(app),
+            label_width,
+        );
+        if bar.rect.is_positive() {
+            location = place(&bar);
+        }
+    }
+    if location.is_none() {
+        // A minimal More row may span adjacent sweep slabs even when no single
+        // free piece is tall enough. Validate that measured footprint directly.
+        let metrics = ui_kit::NavigationMetrics::for_size(app.preferences.navigation_bar.size);
+        let width = metrics.button + 2.0 * (ui_kit::NAV_BORDER + ui_kit::NAV_PADDING + ui_kit::NAV_EDGE);
+        bar = measure(
+            Rect::from_min_size(content.min, vec2(width, content.height())),
+            &app.preferences.navigation_bar,
+            navigation_bar::canvas_caps(app),
+            label_width,
+        );
+        if bar.rect.is_positive() {
+            location = place(&bar);
+        }
+    }
+    if let Some(location) = location {
+        let delta = crate::panel_runtime::egui_rect(location).min - bar.rect.min;
+        bar.rect = bar.rect.translate(delta);
+        for (_, rect) in &mut bar.slots {
+            *rect = rect.translate(delta);
+        }
+        if bar.more.is_positive() {
+            bar.more = bar.more.translate(delta);
+        }
+    } else {
+        bar.rect = Rect::NOTHING;
+        bar.slots.clear();
+        bar.more = Rect::NOTHING;
+    }
+    bar
 }
 
 fn selected(app: &SolveApp, id: &str) -> bool {
@@ -165,7 +249,7 @@ fn activate(app: &mut SolveApp, slot: &Slot) {
         _ => {
             if let Some(command) = slot.command {
                 let params = match slot.kind {
-                    Kind::Tool => json!({"tool": if selected(app, slot.id) { "none" } else { slot.id }}),
+                    Kind::Tool if command == "view.tool" => json!({"tool": if selected(app, slot.id) { "none" } else { slot.id }}),
                     _ if slot.id == "ambient_occlusion" => json!({"enabled": !app.preferences.ambient_occlusion}),
                     _ => json!({}),
                 };
@@ -175,18 +259,20 @@ fn activate(app: &mut SolveApp, slot: &Slot) {
     }
 }
 
-fn tooltip(app: &SolveApp, response: egui::Response, slot: &Slot, hidden: Option<&str>, top: f32) -> egui::Response {
+fn tooltip(app: &SolveApp, response: egui::Response, slot: &Slot, hidden: Option<&str>, along: Rect, edge: Edge) -> egui::Response {
+    let key = slot.command.and_then(|id| crate::keymap::display_for(app, id));
     let label = if let Some(hidden) = hidden {
         app.tr(hidden).to_owned()
     } else if slot.id == "visual_style" {
         crate::i18n::format("navbar.value_tip", &[("name", app.tr(slot.label)), ("value", current_style(app))])
     } else if slot.id == "projection" && projection_locked(app) {
         app.tr("nav.perspective.sketch").to_owned()
+    } else if slot.id == "zoom" && key.is_some() {
+        app.tr("navbar.zoom_hold_tip").to_owned()
     } else {
         app.tr(slot.label).to_owned()
     };
-    let key = slot.command.and_then(|id| crate::keymap::display_for(app, id));
-    ui_kit::navigation_tooltip(&response, top, &label, key.as_deref());
+    ui_kit::navigation_tooltip(&response, along, edge, &label, key.as_deref());
     response
 }
 
@@ -200,7 +286,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     }
     crate::scenario::publish_rect("nav:outer", bar.rect);
-    let menu_id = ui.id().with("navigation_bar_menu");
+    let menu_id = ui.scope_id().with("navigation_bar_menu");
     let mut open = ui.data(|d| d.get_temp::<String>(menu_id)).unwrap_or_default();
     let active = ui.rect_contains_pointer(bar.rect)
         || ui.rect_contains_pointer(crate::viewport::axis_rect(app, rect))
@@ -212,7 +298,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         || app.viewport.spin
         || !open.is_empty();
     let opacity = ui_kit::navigation_opacity(app.preferences.navigation_bar.idle, active);
-    let background = ui.interact(bar.rect, ui.id().with("navigation_bar_context"), egui::Sense::click());
+    let background = ui.interact(bar.rect, ui.scope_id().with("navigation_bar_context"), egui::Sense::click());
     let opacity = if app.preferences.navigation_bar.idle == Idle::Hide {
         ui.ctx().animate_value_with_time(menu_id.with("opacity"), opacity, if active { ui_kit::NAV_FADE_SECONDS } else { 0.0 })
     } else {
@@ -253,7 +339,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
                     menu: false,
                 },
             );
-            ui_kit::navigation_tooltip(&response, bar.rect.top(), app.tr("navbar.more"), None);
+            ui_kit::navigation_tooltip(&response, bar.rect, app.preferences.navigation_bar.edge, app.tr("navbar.more"), None);
             crate::scenario::publish_target("nav:more", response.rect);
             context_menu(app, &response, None);
             if response.clicked() {
@@ -265,12 +351,14 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     if !open.is_empty() && anchor.is_positive() {
         let child_popup_open = egui::Popup::is_any_open(ui.ctx());
         let ctx = ui.ctx().clone();
-        let menu = Container::new(&ctx, Surface::Popup)
-            .area(menu_id.with("popup"))
-            .order(egui::Order::Foreground)
-            .pivot(Align2::RIGHT_BOTTOM)
-            .fixed_pos(anchor.right_top() - vec2(0.0, ui_kit::NAV_POPUP_GAP))
-            .show(&ctx, |ui| {
+        // Menus open into the view: up from a bar at the bottom, down from one at the top.
+        let (pivot, at) = match app.preferences.navigation_bar.edge {
+            Edge::Bottom => (Align2::RIGHT_BOTTOM, anchor.right_top() - vec2(0.0, ui_kit::NAV_POPUP_GAP)),
+            Edge::Top => (Align2::RIGHT_TOP, anchor.right_bottom() + vec2(0.0, ui_kit::NAV_POPUP_GAP)),
+        };
+        let menu = Container::new(&ctx, Surface::Popup).area(menu_id.with("popup")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(at).show(
+            &ctx,
+            |ui| {
                 ui_kit::navigation_menu(ui, if open == "more" { ui_kit::NAV_MORE_WIDTH } else { ui_kit::NAV_POPUP_WIDTH }, |ui| {
                     match open.as_str() {
                         "visual_style" => {
@@ -283,7 +371,8 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
                         _ => open.clear(),
                     }
                 });
-            });
+            },
+        );
         let outside = !child_popup_open
             && ui.input(|i| {
                 i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !menu.response.rect.contains(p) && !bar.rect.contains(p))
@@ -341,7 +430,7 @@ pub(crate) fn paint_row(
                         ui_kit::navigation_separator(ui, *bounds);
                         ui.interact(
                             *bounds,
-                            ui.id().with("separator"),
+                            ui.scope_id().with("separator"),
                             if editing.is_some() { egui::Sense::click_and_drag() } else { egui::Sense::click() },
                         )
                     } else {
@@ -372,18 +461,19 @@ pub(crate) fn paint_row(
             .inner;
         let mut hidden = None;
         if let Some((selected, caps, render)) = editing {
-            response
-                .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected == Some(index), app.tr(slot.label)));
+            response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected == Some(index), app.tr(slot.label)));
             ui_kit::navigation_edit_outline(ui, *bounds, !slot.available(caps), selected == Some(index));
             if !slot.available(caps) {
                 hidden = Some(if render { "navbar.custom.hidden_render" } else { "navbar.custom.hidden_design" });
             }
         } else {
             response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected(app, slot.id) || open == slot.id, app.tr(slot.label))
+                egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected(app, slot.id) || open == slot.id, app.tr(slot.label))
             });
         }
-        responses.push((index, *slot, tooltip(app, response, slot, hidden, bar.rect.top())));
+        // The settings' preview keeps its tips above, wherever the bar sits in the view.
+        let edge = if editing.is_some() { Edge::Bottom } else { app.preferences.navigation_bar.edge };
+        responses.push((index, *slot, tooltip(app, response, slot, hidden, bar.rect, edge)));
     }
     responses
 }
@@ -423,7 +513,7 @@ pub(crate) fn context_menu(app: &mut SolveApp, response: &egui::Response, index:
 
 fn style_menu(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     let mut chosen = false;
-    for (index, style) in ["shaded_with_edges", "shaded", "wireframe", "shaded_with_hidden_edges"].into_iter().enumerate() {
+    for (index, style) in navigation_bar::VISUAL_STYLES.iter().map(|(style, _)| *style).enumerate() {
         let label = format!("navbar.style.{style}");
         let mut item = ui_kit::NavigationMenuRow::new(style, app.tr(&label), navigation_bar::visual_style_icon(index as u8));
         item.selected = app.ui.visual_style == index as u8;
@@ -462,7 +552,7 @@ fn overflow_menu(app: &mut SolveApp, ui: &mut egui::Ui, slots: &[&Slot], open: &
         if slot.id == "display" {
             crate::scenario::publish_handle("nav:view", response.rect.center());
         }
-        if tooltip(app, response.clone(), slot, None, response.rect.top()).clicked() {
+        if tooltip(app, response.clone(), slot, None, response.rect, Edge::Bottom).clicked() {
             if slot.kind == Kind::Menu {
                 *open = slot.id.to_owned();
             } else {
@@ -516,7 +606,7 @@ fn display_menu(app: &mut SolveApp, ui: &mut egui::Ui) {
         item.selected = app.ui.perspective == perspective;
         item.enabled = !projection_locked(app);
         let response = item.show(ui);
-        let response = if projection_locked(app) { response.on_hover_text(app.tr("nav.perspective.sketch")) } else { response };
+        let response = if projection_locked(app) { response.backing_on_hover_text(app.tr("nav.perspective.sketch")) } else { response };
         crate::scenario::publish_target(if perspective { "view:projection" } else { "view:orthographic" }, response.rect);
         if response.clicked() && app.ui.perspective != perspective {
             toggle_projection(app);
@@ -541,7 +631,7 @@ fn display_menu(app: &mut SolveApp, ui: &mut egui::Ui) {
     // The View angles readout under the orientation gizmo (#6032).
     let mut angles = NavigationMenuRow::new("view_angles", app.tr("ui.view_angles"), "select");
     angles.selected = app.preferences.show_view_angles;
-    let response = angles.show(ui).on_hover_text(app.tr("ui.view_angles_help"));
+    let response = angles.show(ui).backing_on_hover_text(app.tr("ui.view_angles_help"));
     crate::scenario::publish_target("view:view_angles", response.rect);
     if response.clicked() {
         let _ = app.run("view.angle_readout", json!({"enabled": !app.preferences.show_view_angles}));

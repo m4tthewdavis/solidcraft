@@ -61,7 +61,10 @@ fn format20_scalar_looks_upgrade_and_format21_setups_keep_their_meaning() {
     assert_eq!(d.render.setups["Studio"].width, 320);
     for version in [crate::doc::format::FORMAT + 1, crate::doc::format::FORMAT + 2] {
         saved["format"] = json!(format!("solidcraft/{version}"));
-        assert!(crate::doc::Document::from_json(&saved.to_string()).is_err());
+        // A newer build's file opens, says so, and keeps its number.
+        let newer = crate::doc::Document::from_json(&saved.to_string()).unwrap();
+        assert_eq!(newer.newer_file.as_ref().unwrap().format, version);
+        assert_eq!(newer.format, format!("solidcraft/{version}"));
     }
 }
 
@@ -877,4 +880,106 @@ fn appearance_chain_and_replace_process_ten_thousand_entries_with_bounded_output
         s.execute("appearance.replace", &json!({"from":"ABS - Blue","to":"ABS - Red","scope":{"bodies":vec!["Specimen";10_000]}})).unwrap()["count"],
         0
     );
+}
+
+#[test]
+fn appearance_gestures_copy_paste_preserve_full_resolved_look_and_history() {
+    let mut s = fixture();
+    s.execute(
+        "appearance.assign",
+        &json!({"body":"Specimen","faces":[[5,10,5]],"name":"Sampled","color":"#345678","pbr":{"metallic":0.2,"roughness":0.3,"dielectric_ior":1.6}}),
+    )
+    .unwrap();
+    let face = s.execute("model.faces", &json!({"body":"Specimen"})).unwrap()["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["point"][2].as_f64() == Some(5.0))
+        .unwrap()["index"]
+        .clone();
+    let before = s.doc.clone();
+    let undo = s.undo.len();
+    let target = json!({"body":"Specimen","face":face});
+    let sampled = s.execute("appearance.pick_up", &json!({"target":target})).unwrap();
+    assert_eq!(sampled["look"]["name"], "Sampled");
+    assert_eq!(s.execute("appearance.copy", &json!({"target":target})).unwrap(), sampled);
+    s.execute("appearance.paint", &sampled["look"]).unwrap();
+    assert!(Arc::ptr_eq(&before, &s.doc));
+    assert_eq!(s.undo.len(), undo);
+    s.execute("appearance.paste", &json!({"bodies":["Specimen"]})).unwrap();
+    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(serde_json::to_value(&s.doc.appearances.bodies["Specimen"]).unwrap()["pbr"], sampled["look"]["pbr"]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc.to_json(), before.to_json());
+    let document = s.doc.clone();
+    let history = (s.undo.len(), s.redo.len());
+    for (id, params) in [
+        ("appearance.pick_up", json!({"target":{"body":"missing"}})),
+        ("appearance.copy", json!({"target":{"body":"Specimen","face":999999}})),
+        ("appearance.paste", json!({"bodies":["Specimen","missing"]})),
+        ("appearance.paint", json!({"appearance":"starter.glass.clear-soda-lime"})),
+    ] {
+        assert!(s.execute(id, &params).is_err(), "{id}");
+        assert!(Arc::ptr_eq(&document, &s.doc));
+        assert_eq!((s.undo.len(), s.redo.len()), history);
+    }
+}
+
+#[test]
+fn appearance_gestures_favorite_is_a_validated_transient_request() {
+    let mut s = fixture();
+    let before = s.doc.clone();
+    let state = (s.undo.len(), s.redo.len(), s.revision, s.evaluations, s.is_dirty());
+    for favorite in [true, false] {
+        let reply = s.execute("appearance.favorite", &json!({"look":{"appearance":"Copper"},"favorite":favorite})).unwrap();
+        assert_eq!(reply["look"]["name"], "Copper");
+        assert_eq!(reply["favorite"], favorite);
+    }
+    for params in [
+        json!(null),
+        json!([]),
+        json!({}),
+        json!({"look":{},"favorite":true}),
+        json!({"look":{"color":"#123456"},"favorite":"true"}),
+        json!({"look":{"color":"#123456"},"favorite":true,"extra":1}),
+    ] {
+        assert!(s.execute("appearance.favorite", &params).is_err());
+    }
+    assert!(Arc::ptr_eq(&before, &s.doc));
+    assert_eq!((s.undo.len(), s.redo.len(), s.revision, s.evaluations, s.is_dirty()), state);
+}
+
+/// A placed copy's name (`KB (K:2)`, the name inspect.measure lists) and a placement's (`K:2`)
+/// mean the body and component they show in appearance.chain, appearance.list and
+/// appearance.replace's scope, as appearance.assign already takes them (#9740).
+#[test]
+fn appearance_reads_and_scopes_take_a_placed_copys_name() {
+    let mut s = Session::default();
+    s.execute("component.create", &json!({"name":"K"})).unwrap();
+    s.execute("solid.box", &json!({"body_name":"KB","length":10,"width":10,"height":10})).unwrap();
+    s.execute("occurrence.copy", &json!({"component":"K","translate":[30,0,0]})).unwrap();
+    let world: Vec<String> = s.world_state().unwrap().bodies.iter().map(|b| b.name.clone()).collect();
+    assert!(world.iter().any(|n| n == "KB (K:2)"), "{world:?}");
+    s.execute("appearance.assign", &json!({"bodies":["KB"],"appearance":"ABS - Red"})).unwrap();
+    s.execute("appearance.assign", &json!({"components":["K"],"appearance":"ABS - Blue"})).unwrap();
+
+    assert_eq!(chain_read(&mut s, json!({"body":"KB (K:2)"})), chain_read(&mut s, json!({"body":"KB"})));
+    assert_eq!(chain_read(&mut s, json!({"body":"KB (K:2)","face":0})), chain_read(&mut s, json!({"body":"KB","face":0})));
+    assert_eq!(chain_read(&mut s, json!({"component":"K:2"})), chain_read(&mut s, json!({"component":"K"})));
+    let listed = |s: &mut Session, body: &str| s.execute("appearance.list", &json!({"body":body})).unwrap()["body"].clone();
+    let placed = listed(&mut s, "KB (K:2)");
+    assert_eq!(placed["name"], "KB", "the reply names the body the copy shows: {placed}");
+    assert_eq!(placed, listed(&mut s, "KB"));
+
+    let scope = json!({"bodies":["KB (K:2)"],"components":["K:2"]});
+    let r = s.execute("appearance.replace", &json!({"from":"ABS - Red","to":"ABS - Blue","scope":scope})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    assert_eq!(s.doc.appearances.bodies["KB"], s.doc.appearances.components[&s.doc.find_component("K").unwrap()]);
+
+    // A name that is neither the model's nor a placed copy's is still refused.
+    assert!(s.execute("appearance.chain", &json!({"target":{"body":"KB (K:9)"}})).is_err());
+    assert!(s.execute("appearance.chain", &json!({"target":{"component":"K:9"}})).is_err());
+    assert!(s.execute("appearance.list", &json!({"body":"KB (K:9)"})).is_err());
+    assert!(s.execute("appearance.replace", &json!({"from":"ABS - Blue","to":"ABS - Red","scope":{"bodies":["KB (K:9)"]}})).is_err());
+    assert!(s.execute("appearance.replace", &json!({"from":"ABS - Blue","to":"ABS - Red","scope":{"components":["K:9"]}})).is_err());
 }
