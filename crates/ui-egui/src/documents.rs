@@ -637,16 +637,40 @@ pub(crate) fn sync_views(app: &mut SolveApp) {
 }
 
 /// Change the shown design's views with `change`; when that changes the active view, the app
-/// shows the new one ([`apply_view`]).
+/// shows the new one ([`apply_view`]). With `remember_view_toolbar_tab`, the Model view left keeps
+/// its toolbar tab and a Model view shown again has its own back ([`view_toolbar`]).
 fn change_views<T>(app: &mut SolveApp, change: impl FnOnce(&mut ViewSet) -> T) -> T {
-    let before = app.docs.views.active().id;
+    let before = app.docs.views.active().clone();
+    let remember = app.preferences.remember_view_toolbar_tab;
+    if remember && before.kind == ViewKind::Model {
+        let tab = (app.ui.tab.clone(), app.ui.ribbon_context.clone(), app.ui.sketch_return_tab.clone());
+        app.docs.views.remember_toolbar_tab(before.id, tab);
+    }
     let result = change(&mut app.docs.views);
     let active = app.docs.views.active();
-    if active.id != before {
+    if active.id != before.id {
         let active = active.clone();
         apply_view(app, &active);
+        if remember {
+            view_toolbar(app, &active);
+        }
     }
     result
+}
+
+/// Put the toolbar back as the Model view `view` left it, when it was shown before in this
+/// session. A view never shown keeps the toolbar as it is, and a Sketch or Render view has its own.
+/// A remembered tab hidden from the toolbar since falls back as any hidden tab does.
+fn view_toolbar(app: &mut SolveApp, view: &DesignView) {
+    if view.kind != ViewKind::Model {
+        return;
+    }
+    if let Some((tab, context, back)) = app.docs.views.toolbar_tab(view.id).cloned() {
+        app.ui.tab = tab;
+        app.ui.ribbon_context = context;
+        app.ui.sketch_return_tab = back;
+        crate::workspace::sync_context(app);
+    }
 }
 
 /// Open a view of `kind` showing `subject` in the shown design and show it (`reuse`: one that
@@ -3939,6 +3963,34 @@ mod tests {
         switch(&mut a, 0);
         switch(&mut a, 1);
         assert_eq!(a.ui.tab, "VIEW");
+    }
+
+    /// With `remember_view_toolbar_tab`, each Model view of a design comes back on its own toolbar
+    /// tab: one left on SURFACE is on SURFACE again after another, left on INSPECT, was shown; a
+    /// view not shown before keeps the tab as it is; a hidden tab falls back to MODEL. Off, a view
+    /// switch leaves the tab alone, as before.
+    #[test]
+    fn each_model_view_remembers_its_own_toolbar_tab() {
+        for remember in [true, false] {
+            let mut a = app();
+            a.preferences.remember_view_toolbar_tab = remember;
+            a.run("solid.box", json!({"length": 1, "width": 1, "height": 1})).unwrap();
+            let first = a.docs.views.active().id;
+            a.ui.tab = "SURFACE".into();
+            let second = view_open(&mut a, ViewKind::Model, None, false);
+            assert_ne!(first, second);
+            assert_eq!(a.ui.tab, "SURFACE", "remember {remember}: a new view keeps the tab as it is");
+            a.ui.tab = "INSPECT".into();
+            for (view, tab) in [(first, "SURFACE"), (second, "INSPECT"), (first, "SURFACE")] {
+                assert!(view_activate(&mut a, view));
+                assert_eq!(a.ui.tab, if remember { tab } else { "INSPECT" }, "remember {remember}: view {view}");
+            }
+            if remember {
+                a.preferences.hidden_toolbar_tabs = vec!["INSPECT".into()];
+                view_activate(&mut a, second);
+                assert_eq!(a.ui.tab, "MODEL", "a remembered tab hidden since falls back");
+            }
+        }
     }
 
     /// A remembered tab hidden from the toolbar since falls back to MODEL, as a hidden tab does.

@@ -3,6 +3,8 @@
 //! and the saved form all read the same [`ViewSet`]. A view change reaches the app through
 //! `documents::apply_view`, the one place that knows what a kind means for the window.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 /// Most views one design keeps open (and most a saved set may hold).
@@ -70,6 +72,10 @@ pub struct DesignView {
     pub subject: Option<String>,
 }
 
+/// The toolbar a view was left on: its tab, its contextual tab and the tab a sketch returns to
+/// (the app's `ui.tab`, `ui.ribbon_context` and `ui.sketch_return_tab`).
+pub type ToolbarTab = (String, Option<String>, Option<String>);
+
 /// The views of a design in tab order, the active one, and the views closed lately.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewSet {
@@ -78,6 +84,8 @@ pub struct ViewSet {
     /// Closed views with the place each had, the latest last.
     closed: Vec<(usize, DesignView)>,
     next_id: u64,
+    /// The toolbar each view was left on, by id, while the design is open (never saved).
+    toolbar: BTreeMap<u64, ToolbarTab>,
 }
 
 impl Default for ViewSet {
@@ -90,7 +98,20 @@ impl ViewSet {
     /// A design's first views: one Model view, active.
     pub fn new() -> Self {
         let model = DesignView { id: 1, kind: ViewKind::Model, name: ViewKind::Model.label().into(), subject: None };
-        ViewSet { views: vec![model], active: 1, closed: Vec::new(), next_id: 2 }
+        ViewSet { views: vec![model], active: 1, closed: Vec::new(), next_id: 2, toolbar: BTreeMap::new() }
+    }
+
+    /// The toolbar the view with `id` was last left on, while the design is open.
+    pub fn toolbar_tab(&self, id: u64) -> Option<&ToolbarTab> {
+        self.toolbar.get(&id)
+    }
+
+    /// Remember `tab` as the toolbar the view with `id` was left on. Nothing for a view the set
+    /// does not have.
+    pub fn remember_toolbar_tab(&mut self, id: u64, tab: ToolbarTab) {
+        if self.get(id).is_some() {
+            self.toolbar.insert(id, tab);
+        }
     }
 
     /// The views in tab order (never empty).
@@ -294,7 +315,7 @@ impl ViewSet {
         let highest = used.iter().copied().max().unwrap_or(0);
         let next_id = value.get("next_id").and_then(Value::as_u64).unwrap_or(0).clamp(highest + 1, MAX_ID + 1);
         let active = value.get("active").and_then(Value::as_u64).filter(|id| views.iter().any(|view| view.id == *id)).unwrap_or(views[0].id);
-        Some(ViewSet { views, active, closed, next_id })
+        Some(ViewSet { views, active, closed, next_id, toolbar: BTreeMap::new() })
     }
 
     fn take_id(&mut self) -> u64 {
@@ -323,6 +344,7 @@ impl ViewSet {
     /// Take the view at `i` out of the set onto the closed stack.
     fn remove_closed(&mut self, i: usize) {
         let view = self.views.remove(i);
+        self.toolbar.remove(&view.id);
         self.closed.push((i, view));
         let skip = self.closed.len().saturating_sub(CLOSED_CAP);
         self.closed.drain(..skip);
@@ -534,6 +556,26 @@ mod tests {
             set.move_view(from, to);
         }
         assert_eq!(set.views().iter().map(|view| view.id).collect::<Vec<_>>(), ids);
+    }
+
+    /// A view's toolbar is kept for the views the set has, goes with a closed view, and is never
+    /// saved.
+    #[test]
+    fn a_views_toolbar_is_kept_while_open_and_never_saved() {
+        let mut set = sketches(2);
+        let ids: Vec<u64> = set.views().iter().map(|view| view.id).collect();
+        let surface = ("SURFACE".to_owned(), None, Some("MODEL".to_owned()));
+        set.remember_toolbar_tab(ids[0], surface.clone());
+        set.remember_toolbar_tab(ids[1], ("INSPECT".into(), None, None));
+        set.remember_toolbar_tab(999, ("VIEW".into(), None, None));
+        assert_eq!(set.toolbar_tab(ids[0]), Some(&surface));
+        assert_eq!(set.toolbar_tab(999), None, "not a view of the set");
+        set.close(ids[1]);
+        assert_eq!(set.toolbar_tab(ids[1]), None, "a closed view's goes with it");
+        set.reopen();
+        assert_eq!(set.toolbar_tab(ids[1]), None, "and a reopened view starts afresh");
+        let back = ViewSet::from_json(&set.to_json()).unwrap();
+        assert_eq!(back.toolbar_tab(ids[0]), None, "never saved");
     }
 
     #[test]
