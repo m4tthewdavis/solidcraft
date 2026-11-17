@@ -312,7 +312,8 @@ mod tests {
         assert_eq!(group_after_drop(&[a, None, a], 1), a, "between two of a: joins a");
         assert_eq!(group_after_drop(&[a, b, a], 1), a, "from b into a");
         assert_eq!(group_after_drop(&[a, a, None], 1), a, "still next to its own");
-        assert_eq!(group_after_drop(&[None, a, a], 0), a);
+        assert_eq!(group_after_drop(&[a, a, None], 0), a, "at the run's start, still its own");
+        assert_eq!(group_after_drop(&[None, a, a], 0), None, "before a's first tab, not of it");
         assert_eq!(group_after_drop(&[None, a, None], 1), None, "away from the rest of a");
         assert_eq!(group_after_drop(&[a, None, None], 1), None, "beside a, not of it");
         assert_eq!(group_after_drop(&[b, a, None], 1), None, "beside b, not of it");
