@@ -278,7 +278,7 @@ pub(crate) fn handle(app: &mut SolveApp, groups: &StripGroups, action: &TabActio
             remove(app, *tab);
         }
         TabAction::Menu { tab, id } if id.starts_with(ADD) => {
-            if let Some(group) = id[ADD.len()..].parse().ok() {
+            if let Some(group) = id.strip_prefix(ADD).and_then(|rest| rest.parse::<u64>().ok()) {
                 add(app, group, *tab);
             }
         }
