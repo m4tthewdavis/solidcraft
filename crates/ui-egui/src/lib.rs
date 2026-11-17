@@ -336,6 +336,8 @@ pub mod starting;
 mod status_bar;
 #[cfg(test)]
 mod sweep_dialog_tests;
+pub(crate) mod tab_group_ui;
+pub mod tab_groups;
 pub(crate) mod test_boat;
 pub mod theme;
 pub use solidcraft_ui_kit::theme_files;
@@ -1649,6 +1651,7 @@ impl SolveApp {
             Some("component.edit_in_place") => r.and_then(|v| edit_in_place::command_ran(self, &v).map(|queued| with_queued(v, queued))),
             Some("component.finish_edit") => r.and_then(|v| edit_in_place::finish_command(self).map(|queued| with_queued(v, queued))),
             Some(view) if view.starts_with("tab.view.") => r.and_then(|v| documents::view_command(self, view, v)),
+            Some(group) if group.starts_with("tab.group.") => r.and_then(|v| tab_group_ui::command(self, group, v)),
             _ => r,
         };
         if let Ok(v) = &r {

@@ -26,6 +26,12 @@ const DESIGN_PILL_HEIGHT: f32 = 34.0;
 const PILL_RADIUS: u8 = 8;
 /// The room a pill keeps right of its views: the +, a separator, the close button and its padding.
 const PILL_AFTER: f32 = 63.0;
+/// A tab group's label: the gap after it, the size of an unnamed group's dot, the padding round
+/// a name and the widest label drawn before its name is cut.
+const GROUP_GAP: f32 = 4.0;
+const GROUP_DOT: f32 = 22.0;
+const GROUP_PAD: f32 = 10.0;
+const GROUP_LABEL_MAX: f32 = 160.0;
 /// A view's sub-tab: its height, corner radius, label size, the gap between sub-tabs and the
 /// longest label drawn before it is cut.
 const VIEW_HEIGHT: f32 = 24.0;
@@ -596,6 +602,8 @@ pub struct TabHandles<'a> {
     pub view_new: &'a str,
     pub view_more: &'a str,
     pub switcher: &'a str,
+    /// A tab group's label, this prefix followed by the group's place in [`TabStrip::groups`].
+    pub group: &'a str,
 }
 
 /// One document tab.
@@ -615,6 +623,11 @@ pub struct DocTab<'a> {
     /// small + after its name). Several: the selected design's tab expands to show them (or a
     /// view switcher), and any other design's tab carries a count badge.
     pub views: &'a [ViewTab<'a>],
+    /// The tab group it is in: a place in [`TabStrip::groups`]. A group's tabs sit together; the
+    /// label goes before the first, and a line in its colour runs under them.
+    pub group: Option<usize>,
+    /// Rows its right-click menu has after the strip's own ([`TabStrip::menu`]): its group rows.
+    pub extra_menu: &'a [TabMenuRow<'a>],
 }
 
 /// What a view's sub-tab says about its source.
@@ -700,12 +713,27 @@ pub struct TabMenuRow<'a> {
     pub heading: bool,
     /// A separator line is drawn above this row.
     pub separator_before: bool,
+    /// A colour swatch before the label, and whether the row is the current choice (a check mark
+    /// in place of the swatch).
+    pub swatch: Option<egui::Color32>,
+    pub checked: bool,
 }
 
 impl<'a> TabMenuRow<'a> {
     /// A plain row with no icon, always on, with no separator above it.
     pub const fn new(id: &'a str, label: &'a str, key_on_selected: &'a str) -> Self {
-        Self { id, label, key_on_selected, needs_others: false, icon: "", accent: None, heading: false, separator_before: false }
+        Self {
+            id,
+            label,
+            key_on_selected,
+            needs_others: false,
+            icon: "",
+            accent: None,
+            heading: false,
+            separator_before: false,
+            swatch: None,
+            checked: false,
+        }
     }
 
     /// A muted header over the rows that follow; it is never chosen.
@@ -725,6 +753,13 @@ impl<'a> TabMenuRow<'a> {
         self
     }
 
+    /// This row with a swatch of `colour`, checked when it is the current choice.
+    pub const fn with_swatch(mut self, colour: egui::Color32, checked: bool) -> Self {
+        self.swatch = Some(colour);
+        self.checked = checked;
+        self
+    }
+
     /// This row with the view glyph `icon` in `accent` (the menu's dim ink for none).
     pub const fn with_icon(mut self, icon: &'a str, accent: Option<egui::Color32>) -> Self {
         self.icon = icon;
@@ -739,6 +774,18 @@ pub struct TabRename<'a> {
     pub focused: &'a mut bool,
     /// The longest name taken, in characters.
     pub max: usize,
+}
+
+/// A tab group as the strip draws it: its name (empty: a coloured dot), the label's fill and the
+/// ink of its name on that fill, its accessible name and hover text, and the rows of its
+/// right-click menu.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupLabel<'a> {
+    pub name: &'a str,
+    pub fill: egui::Color32,
+    pub ink: egui::Color32,
+    pub tip: &'a str,
+    pub menu: &'a [TabMenuRow<'a>],
 }
 
 /// The tab strip as the app describes it this frame.
@@ -778,6 +825,10 @@ pub struct TabStrip<'a> {
     pub switcher_menu: &'a [TabMenuRow<'a>],
     /// A design tab released this far below the bar is torn off ([`is_tear_off`]); 0 turns it off.
     pub tear_off_below: f32,
+    /// The tab groups ([`DocTab::group`] names one by its place here).
+    pub groups: &'a [GroupLabel<'a>],
+    /// A group's name being edited in its label: its place and the text.
+    pub group_rename: Option<(usize, TabRename<'a>)>,
 }
 
 /// Whether the strip that keeps its state at `id` ([`TabStrip::id`]) has its list of every tab
@@ -809,6 +860,16 @@ pub enum TabAction {
     /// The name typed was kept, or the edit given up.
     RenameDone,
     RenameCancelled,
+    /// A row of the menu of the group at this place ([`TabStrip::groups`]).
+    GroupMenu {
+        group: usize,
+        id: String,
+    },
+    /// The group's label was double-clicked to rename it (with `double_click_renames`).
+    StartGroupRename(usize),
+    /// The name typed into a group's label was kept, or the edit given up.
+    GroupRenameDone,
+    GroupRenameCancelled,
     Maximize,
     New,
     /// The selected design's view at this place was chosen, or its close button was.
@@ -963,6 +1024,51 @@ pub fn tab_shape(painter: &Painter, t: &Tokens, r: Rect, active: bool, hovered: 
 }
 
 /// The selected tab's name field: Enter or leaving the field keeps the name, Escape gives it up.
+/// How wide a tab group's label is with `name`: a dot for none, else the name and its padding, cut
+/// at [`GROUP_LABEL_MAX`].
+fn group_label_width(ui: &egui::Ui, name: &str) -> f32 {
+    if name.is_empty() {
+        return GROUP_DOT;
+    }
+    (text_width(ui, name, crate::type_face::semibold(Tokens::get().font_small)) + 2.0 * GROUP_PAD).min(GROUP_LABEL_MAX)
+}
+
+/// The label of the tab group at place `g`, in `rect`: its name on its colour (a dot of its colour
+/// with no name), or its name field while it is renamed. A right click opens its menu (`menu`), a
+/// double click starts renaming it.
+fn group_label(ui: &mut egui::Ui, strip: &mut TabStrip, g: usize, rect: Rect, menu: &mut Option<(usize, Pos2)>, actions: &mut Vec<TabAction>) {
+    let Some(label) = strip.groups.get(g).copied() else { return };
+    let h = strip.handles;
+    solidcraft_ui_registry::publish_target(&format!("{}{g}", h.group), rect);
+    if let Some(rename) = strip.group_rename.as_mut().filter(|(k, _)| *k == g).map(|(_, r)| r) {
+        let done = rename_field(ui, rect, rename, &h)
+            .map(|a| if a == TabAction::RenameDone { TabAction::GroupRenameDone } else { TabAction::GroupRenameCancelled });
+        actions.extend(done);
+        return;
+    }
+    let resp = ui.interact(rect, ui.scope_id().with(("doc_group", g)), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.tip));
+    let painter = ui.painter();
+    if label.name.is_empty() {
+        painter.circle_filled(rect.center(), 6.0, label.fill);
+    } else {
+        painter.rect_filled(rect, 6u8, label.fill);
+        let font = crate::type_face::semibold(Tokens::get().font_small);
+        let galley = painter.layout_no_wrap(label.name.to_string(), font, label.ink);
+        let at = pos2(rect.left() + GROUP_PAD, rect.center().y - galley.size().y / 2.0);
+        painter.with_clip_rect(rect.shrink2(vec2(GROUP_PAD - 2.0, 0.0))).galley(at, galley, label.ink);
+    }
+    if resp.hovered() {
+        painter.rect_stroke(rect.expand(1.0), 7u8, Stroke::new(1.5, label.fill), egui::StrokeKind::Outside);
+    }
+    let resp = resp.backing_on_hover_text(label.tip);
+    if resp.secondary_clicked() {
+        *menu = Some((g, ui.ctx().pointer_interact_pos().unwrap_or(rect.left_bottom())));
+    } else if resp.double_clicked() && strip.double_click_renames {
+        actions.push(TabAction::StartGroupRename(g));
+    }
+}
+
 fn rename_field(ui: &mut egui::Ui, rect: Rect, rename: &mut TabRename, handles: &TabHandles) -> Option<TabAction> {
     let t = Tokens::get();
     ui.painter().rect_filled(rect, t.radius_sm, t.field);
@@ -1189,6 +1295,11 @@ fn menu_rows(ui: &mut egui::Ui, rows: &[TabMenuRow], keys: bool, others: bool, o
         }
         if keys && !row.key_on_selected.is_empty() {
             item = item.key(row.key_on_selected);
+        }
+        item.swatch = row.swatch.map(|c| [c.r(), c.g(), c.b()]);
+        if row.checked {
+            // The menu draws the current choice with a check mark.
+            item = item.key("current");
         }
         item.enabled = (!row.needs_others || others) && row.id != off;
         let top = ui.cursor().top();
@@ -1522,21 +1633,40 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
     // The selected tab grows with a name being typed into it.
     let typed = strip.rename.as_ref().map(|r| r.text.clone());
     let view_typed = strip.view_rename.as_ref().map(|(k, r)| (*k, r.text.clone()));
+    // Each tab group's label sits before its first tab, as the start of that tab's slot.
+    let group_typed = strip.group_rename.as_ref().map(|(g, r)| (*g, r.text.clone()));
+    let label_ws: Vec<f32> = strip
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(g, label)| match &group_typed {
+            Some((k, text)) if *k == g => group_label_width(ui, text).max(RENAME_MIN),
+            _ => group_label_width(ui, label.name),
+        })
+        .collect();
+    let prefix: Vec<f32> = (0..n)
+        .map(|i| match strip.tabs[i].group {
+            Some(g) if i == 0 || strip.tabs[i - 1].group != Some(g) => label_ws.get(g).map_or(0.0, |w| w + GROUP_GAP),
+            _ => 0.0,
+        })
+        .collect();
+    let labels: f32 = prefix.iter().sum();
+    let pre = |i: usize| prefix.get(i).copied().unwrap_or(0.0);
     // The selected design's several views: a pill or a switcher, as far as the bar has room.
     let geom = strip.tabs.get(strip.selected).copied().filter(|tab| strip.shown_selected == Some(strip.selected) && tab.views.len() > 1).map(|tab| {
-        let room = (x1 - x0 - 34.0 - MIN_TAB * n.saturating_sub(1) as f32).max(0.0);
+        let room = (x1 - x0 - 34.0 - MIN_TAB * n.saturating_sub(1) as f32 - labels).max(0.0);
         measure(ui, strip, &tab, typed.as_deref().unwrap_or(tab.name), view_typed.as_ref().map(|(k, text)| (*k, text.as_str())), room)
     });
     let selected = strip.selected;
     let kind_of = |i: usize| geom.as_ref().filter(|_| i == selected).map_or(SelectedLayout::Plain, |g| g.kind);
-    let (first, shown, w) = tab_layout(n, strip.selected, x1 - x0 - geom.as_ref().map_or(0.0, |g| (g.width - MIN_TAB).max(0.0)));
+    let (first, shown, w) = tab_layout(n, strip.selected, x1 - x0 - labels - geom.as_ref().map_or(0.0, |g| (g.width - MIN_TAB).max(0.0)));
     let natural: Vec<f32> = strip
         .tabs
         .iter()
         .enumerate()
         .map(|(i, tab)| {
             if let Some(g) = geom.as_ref().filter(|_| i == strip.selected) {
-                return g.width;
+                return g.width + pre(i);
             }
             let shown_name = match &typed {
                 Some(text) if i == strip.selected => text.clone(),
@@ -1547,12 +1677,14 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
             let badge = if tab.security.is_some() { 18.0 } else { 0.0 };
             let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
             let count = if tab.views.len() > 1 { 7.0 + badge_width(ui, tab.views.len()) } else { 0.0 };
-            (text + 40.0 + badge + plus + count).clamp(72.0, MAX_FIT)
+            (text + 40.0 + badge + plus + count).clamp(72.0, MAX_FIT) + pre(i)
         })
         .collect();
     let fit_all = shown == n && natural.iter().sum::<f32>() <= x1 - x0 - 34.0;
     let menu_id = strip.id.with("menu");
     let mut menu: Option<(usize, Pos2)> = ui.ctx().data(|d| d.get_temp(menu_id));
+    let group_menu_id = strip.id.with("group_menu");
+    let mut group_menu: Option<(usize, Pos2)> = ui.ctx().data(|d| d.get_temp(group_menu_id));
     let (popup_id, vdrag_id) = (strip.id.with("view_popup"), strip.id.with("view_drag"));
     let (held_down, released, escape) = ui.input(|i| (i.pointer.primary_down(), i.pointer.primary_released(), i.key_pressed(egui::Key::Escape)));
     let mut pen = Pen {
@@ -1566,9 +1698,9 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
     // The shown tabs' widths, in strip order.
     let widths: Vec<f32> = (first..first + shown)
         .map(|i| match geom.as_ref() {
-            Some(g) if i == strip.selected => g.width,
+            Some(g) if i == strip.selected => g.width + pre(i),
             _ if fit_all => natural.get(i).copied().unwrap_or(w),
-            _ => w,
+            _ => w + pre(i),
         })
         .collect();
     let width = |i: usize| i.checked_sub(first).and_then(|k| widths.get(k)).copied().unwrap_or(w);
@@ -1603,11 +1735,25 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
         let Some(tab) = strip.tabs.get(i).copied() else {
             continue;
         };
-        let w = width(i);
-        let left = match held {
+        // A group's first tab starts its slot with the group's label.
+        let label_w = pre(i);
+        let w = width(i) - label_w;
+        let slot_left = match held {
             Some((from, left)) if from == i => left,
             _ => i.checked_sub(first).and_then(|k| lefts.get(k)).copied().unwrap_or(x0),
         };
+        let left = slot_left + label_w;
+        if let Some(g) = tab.group {
+            // A line in the group's colour runs under its tabs, from its label on.
+            if let Some(label) = strip.groups.get(g) {
+                let line = Rect::from_min_max(pos2(slot_left + 1.0, r.bottom() - 3.0), pos2(left + w - 1.0, r.bottom() - 1.0));
+                ui.painter().rect_filled(line, 1u8, label.fill);
+            }
+            if label_w > 0.0 {
+                let lr = Rect::from_min_size(pos2(slot_left, r.center().y - 11.0), vec2(label_w - GROUP_GAP, 22.0));
+                group_label(ui, strip, g, lr, &mut group_menu, &mut actions);
+            }
+        }
         let kind = kind_of(i);
         let plain = kind == SelectedLayout::Plain;
         let height = match kind {
@@ -1790,7 +1936,17 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
             .area(menu_id.with("area"))
             .fixed_pos(at)
             .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| crate::menu::menu_frame(ui, |ui| menu_rows(ui, strip.menu, i == strip.selected, n > 1, "", h.menu_row)));
+            .show(ui.ctx(), |ui| {
+                crate::menu::menu_frame(ui, |ui| {
+                    let own = menu_rows(ui, strip.menu, i == strip.selected, n > 1, "", h.menu_row);
+                    let extra = strip.tabs.get(i).map_or(&[][..], |tab| tab.extra_menu);
+                    let more = (!extra.is_empty()).then(|| {
+                        crate::menu::list_row(ui, &crate::Item::sep());
+                        menu_rows(ui, extra, i == strip.selected, n > 1, "", h.menu_row)
+                    });
+                    own.or(more.flatten())
+                })
+            });
         if let Some(id) = &resp.inner {
             actions.push(TabAction::Menu { tab: i, id: id.clone() });
         }
@@ -1803,6 +1959,29 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
         }
         None => {
             d.remove::<(usize, Pos2)>(menu_id);
+        }
+    });
+    // A tab group's menu.
+    if let Some((g, at)) = group_menu.filter(|(g, _)| *g < strip.groups.len()) {
+        let rows = strip.groups.get(g).map_or(&[][..], |label| label.menu);
+        let resp = crate::Container::new(ui.ctx(), crate::Surface::Popup)
+            .area(group_menu_id.with("area"))
+            .fixed_pos(at)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| crate::menu::menu_frame(ui, |ui| menu_rows(ui, rows, false, true, "", h.menu_row)));
+        if let Some(id) = &resp.inner {
+            actions.push(TabAction::GroupMenu { group: g, id: id.clone() });
+        }
+        let pressed_outside = ui.ctx().input(|x| x.pointer.any_pressed()) && !resp.response.contains_pointer();
+        group_menu =
+            if resp.inner.is_some() || pressed_outside || ui.ctx().input(|x| x.key_pressed(egui::Key::Escape)) { None } else { Some((g, at)) };
+    }
+    ui.ctx().data_mut(|d| match group_menu {
+        Some(m) => {
+            d.insert_temp(group_menu_id, m);
+        }
+        None => {
+            d.remove::<(usize, Pos2)>(group_menu_id);
         }
     });
     // The menus of the selected design's views.

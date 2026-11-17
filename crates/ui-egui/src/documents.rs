@@ -211,6 +211,10 @@ pub struct Documents {
     pub(crate) views: ViewSet,
     /// A view's name being typed in its sub-tab ([`view_rename_start`]).
     pub(crate) view_rename: Option<ViewRename>,
+    /// The window's tab groups, by tab number ([`crate::tab_groups`]).
+    pub(crate) groups: crate::tab_groups::TabGroups,
+    /// A group's name being typed in its label.
+    pub(crate) group_rename: Option<crate::tab_group_ui::GroupRename>,
 }
 
 /// A view of the shown design whose name is being typed: the view, the text and whether the
@@ -362,6 +366,16 @@ impl Documents {
             self.active_tab = next_tab();
         }
         self.active_tab
+    }
+
+    /// Every tab's number ([`DocSlot::tab`]), in strip order; the shown one is numbered now if it
+    /// was not yet.
+    pub(crate) fn tab_numbers(&mut self) -> Vec<u64> {
+        let shown = self.active_tab();
+        if self.slots.is_empty() {
+            return vec![shown];
+        }
+        self.slots.iter().map(|slot| slot.as_ref().map_or(shown, |slot| slot.tab)).collect()
     }
 
     /// [`Self::active_tab`], without numbering a tab not asked for yet (0).
@@ -1623,6 +1637,7 @@ pub fn control(app: &mut SolveApp, p: &Value) -> Value {
             let at = |k: &str| p.get(k).and_then(Value::as_u64).map(|x| x as usize);
             if let (Some(from), Some(to)) = (at("from"), at("to")) {
                 move_tab(app, from, to);
+                crate::tab_group_ui::dropped(app, to);
             }
         }
         Some("quit") => request_quit(app),
@@ -1713,6 +1728,7 @@ const TAB_HANDLES: crate::app_bar::TabHandles<'static> = crate::app_bar::TabHand
     view_new: "tab:view_new",
     view_more: "tab:view_more",
     switcher: "tab:switcher",
+    group: "tab:group:",
 };
 
 /// How far below the bar (points) a design tab is released to tear it off: the distance
@@ -1805,6 +1821,12 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         .collect();
     let more_text = solidcraft_ui_text::tr("tab_strip.more");
     let plus_menu = crate::design_view_ui::plus_menu(solidcraft_theme::is_dark());
+    // The tab groups: their labels and menus, each tab's group rows, and a name being typed.
+    let group_parts = crate::tab_group_ui::StripGroups::build(app);
+    let group_menus = group_parts.group_menus();
+    let group_labels = group_parts.labels(&group_menus);
+    let tab_menus = group_parts.tab_menus();
+    let mut group_edit = crate::tab_group_ui::take_rename(app);
     let actions = {
         let mut strip = crate::app_bar::TabStrip {
             tabs: info
@@ -1813,13 +1835,17 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
                 .zip(&places)
                 .zip(&badges)
                 .zip(&view_tabs)
-                .map(|(((((list_name, dirty), name), place), security), views)| crate::app_bar::DocTab {
+                .zip(group_parts.of_tab.iter().chain(std::iter::repeat(&None)))
+                .zip(tab_menus.iter().map(Vec::as_slice).chain(std::iter::repeat(&[][..])))
+                .map(|(((((((list_name, dirty), name), place), security), views), group), extra_menu)| crate::app_bar::DocTab {
                     name,
                     list_name,
                     dirty: *dirty,
                     place,
                     security: *security,
                     views,
+                    group: *group,
+                    extra_menu,
                 })
                 .collect(),
             selected,
@@ -1854,6 +1880,8 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
             plus_menu: &plus_menu,
             switcher_menu: &SWITCHER_MENU,
             tear_off_below: TEAR_OFF_BELOW,
+            groups: &group_labels,
+            group_rename: crate::tab_group_ui::rename_field(&group_parts, group_edit.as_mut()),
         };
         crate::app_bar::tabs(ui, &mut strip, r, x0, x1)
     };
@@ -1903,7 +1931,11 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
     // A file loading into the window keeps the tabs as they are (dragging still moves it).
     let idle = !app.file_load_holds();
     let (mut shut, mut pick, mut many, mut dropped) = (None, None, None, None);
+    crate::tab_group_ui::finish_rename(app, group_edit, &actions);
     for action in actions {
+        if idle && crate::tab_group_ui::handle(app, &group_parts, &action) {
+            continue;
+        }
         match action {
             crate::app_bar::TabAction::Select(i) => pick = Some(i),
             crate::app_bar::TabAction::Close(i) => shut = Some(i),
@@ -1944,6 +1976,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         (None, None) => {
             if let Some((from, to)) = dropped {
                 move_tab(app, from, to);
+                crate::tab_group_ui::dropped(app, to);
             }
         }
     }

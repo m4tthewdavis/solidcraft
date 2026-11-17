@@ -156,7 +156,15 @@ const TAB_HANDLES: TabHandles<'static> = TabHandles {
     view_new: "t:vnew",
     view_more: "t:vmore",
     switcher: "t:switcher",
+    group: "t:group:",
 };
+
+const GROUP_MENU: [TabMenuRow<'static>; 3] = [
+    TabMenuRow::new("grename", "Rename tab group", ""),
+    TabMenuRow::new("gblue", "Blue", "").with_swatch(egui::Color32::BLUE, true),
+    TabMenuRow::new("gungroup", "Ungroup", "").separated(),
+];
+const EXTRA_MENU: [TabMenuRow<'static>; 1] = [TabMenuRow::new("gremove", "Remove from tab group", "")];
 
 const VIEW_MENU: [TabMenuRow<'static>; 3] = [
     TabMenuRow::new("vclose", "Close view", "Ctrl+W"),
@@ -216,6 +224,9 @@ struct TabsRig {
     rename: Option<usize>,
     text: std::cell::RefCell<String>,
     focused: std::cell::Cell<bool>,
+    /// The first two designs are in a tab group named "Parts" (or with no name, `unnamed`).
+    grouped: std::cell::Cell<bool>,
+    unnamed: std::cell::Cell<bool>,
 }
 
 impl TabsRig {
@@ -238,6 +249,8 @@ impl TabsRig {
             rename: rename.map(|(k, _)| k),
             text: std::cell::RefCell::new(text),
             focused: std::cell::Cell::new(false),
+            grouped: std::cell::Cell::new(false),
+            unnamed: std::cell::Cell::new(false),
         };
         rig.frame(Vec::new());
         rig
@@ -253,11 +266,29 @@ impl TabsRig {
             focused: true,
             ..Default::default()
         };
-        let tab = |name: &'static str| DocTab { name, list_name: name, dirty: false, place: "Not saved yet", security: None, views: &[] };
-        let first = DocTab { views: if self.views.is_some() { &VIEWS } else { &[] }, ..tab("One") };
+        let grouped = self.grouped.get();
+        let tab = |name: &'static str| DocTab {
+            name,
+            list_name: name,
+            dirty: false,
+            place: "Not saved yet",
+            security: None,
+            views: &[],
+            group: None,
+            extra_menu: &[],
+        };
+        let in_group = |doc: DocTab<'static>| if grouped { DocTab { group: Some(0), extra_menu: &EXTRA_MENU, ..doc } } else { doc };
+        let first = in_group(DocTab { views: if self.views.is_some() { &VIEWS } else { &[] }, ..tab("One") });
+        let groups = [GroupLabel {
+            name: if self.unnamed.get() { "" } else { "Parts" },
+            fill: egui::Color32::RED,
+            ink: egui::Color32::WHITE,
+            tip: "Tab group: Parts",
+            menu: &GROUP_MENU,
+        }];
         let (mut text, mut focused) = (self.text.borrow().clone(), self.focused.get());
         let mut strip = TabStrip {
-            tabs: vec![first, tab("Two"), tab("Three")],
+            tabs: vec![first, in_group(tab("Two")), tab("Three")],
             selected: 0,
             shown_selected: Some(0),
             title_bar: false,
@@ -284,6 +315,8 @@ impl TabsRig {
             plus_menu: if self.plus { &PLUS_MENU } else { &[] },
             switcher_menu: &SWITCHER_MENU,
             tear_off_below: 40.0,
+            groups: if grouped { &groups } else { &[] },
+            group_rename: None,
         };
         let (x0, x1) = if self.views.is_some() { (20.0, 780.0) } else { (100.0, 700.0) };
         let mut actions = Vec::new();
@@ -529,6 +562,46 @@ fn the_sub_tabs_return_what_was_clicked_and_dragged() {
     actions.extend(rig.frame(vec![egui::Event::PointerMoved(to)]));
     actions.extend(rig.frame(vec![press(to, false)]));
     assert_eq!(actions, vec![TabAction::ReorderView { from: 0, to: 2 }]);
+}
+
+/// A tab group's label sits before its first tab with a line in its colour under its tabs; a
+/// right click opens its menu (rows returned with the group's place), a double click asks to
+/// rename it, and a grouped tab's menu has its group rows after the strip's own. An unnamed group's
+/// label is a narrow dot, and the label takes room the tabs give up.
+#[test]
+fn a_tab_groups_label_comes_before_its_tabs_with_its_menu() {
+    let rect = |name: &str| solidcraft_ui_registry::rect_of(name).unwrap_or_else(|| panic!("{name} is drawn"));
+    let plain = TabsRig::new();
+    let (tab0, tab1) = (rect("t:tab:0"), rect("t:tab:1"));
+    assert!(solidcraft_ui_registry::rect_of("t:group:0").is_none(), "no group, no label");
+    let rig = TabsRig::new();
+    rig.grouped.set(true);
+    rig.frame(Vec::new());
+    let (label, grouped0, grouped1) = (rect("t:group:0"), rect("t:tab:0"), rect("t:tab:1"));
+    assert!(label.right() <= grouped0.left() && grouped0.right() <= grouped1.left(), "label {label:?}, then its tabs {grouped0:?} {grouped1:?}");
+    assert!(label.left() >= tab0.left() - 1.0, "the label starts where the first tab did");
+    assert!(grouped1.left() > tab1.left(), "the tabs make room for it");
+    drop(plain);
+    rig.press(rig.at("t:group:0"), egui::PointerButton::Secondary);
+    rig.frame(Vec::new());
+    rig.frame(Vec::new());
+    assert_eq!(rig.press(rig.at("t:menu:gblue"), egui::PointerButton::Primary), vec![TabAction::GroupMenu { group: 0, id: "gblue".into() }]);
+    // A double click on the label.
+    let at = rig.at("t:group:0");
+    rig.time.set(rig.time.get() + 1.0);
+    let mut actions = Vec::new();
+    for pressed in [true, false, true, false] {
+        actions.extend(rig.frame(vec![egui::Event::PointerMoved(at), press(at, pressed)]));
+    }
+    assert_eq!(actions, vec![TabAction::StartGroupRename(0)]);
+    // A grouped tab's menu: the strip's rows, then its own.
+    rig.press(rig.at("t:tab:1"), egui::PointerButton::Secondary);
+    rig.frame(Vec::new());
+    assert_eq!(rig.press(rig.at("t:menu:gremove"), egui::PointerButton::Primary), vec![TabAction::Menu { tab: 1, id: "gremove".into() }]);
+    // With no name the label is a dot.
+    rig.unnamed.set(true);
+    rig.frame(Vec::new());
+    assert!(rect("t:group:0").width() < label.width(), "a dot is narrower than a name");
 }
 
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.
