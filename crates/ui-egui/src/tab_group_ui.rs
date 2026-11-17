@@ -38,11 +38,11 @@ fn colour_row(colour: GroupColour) -> &'static str {
     }
 }
 
-/// The fill of a label in `colour` and the ink of its name on it, from the theme.
-pub fn colours(colour: GroupColour) -> (egui::Color32, egui::Color32) {
+/// A group's colour as the theme draws `colour`: the label's tint and dot, and the line under its
+/// tabs. The name itself is in the bar's text colour, as the views' are.
+pub fn fill(colour: GroupColour) -> egui::Color32 {
     let t = solidcraft_theme::Tokens::get();
-    let accent = solidcraft_theme::TabAccent::for_ramp(&t, colour.ramp());
-    (accent.color, accent.on_fill(&t))
+    solidcraft_theme::TabAccent::for_ramp(&t, colour.ramp()).color
 }
 
 /// Each tab's group, in strip order.
@@ -150,8 +150,8 @@ fn start_rename(app: &mut SolveApp, group: u64) {
 /// What the strip shows of the groups this frame, in its order: owned here so the strip can
 /// borrow it.
 pub(crate) struct StripGroups {
-    /// Every group: its id, name, hover text, fill, ink and colour.
-    groups: Vec<(u64, String, String, egui::Color32, egui::Color32, GroupColour)>,
+    /// Every group: its id, name, hover text, fill and colour.
+    groups: Vec<(u64, String, String, egui::Color32, GroupColour)>,
     /// Each tab's group: a place in `groups`.
     pub(crate) of_tab: Vec<Option<usize>>,
     /// Each tab's own menu rows: (id, label).
@@ -177,9 +177,8 @@ impl StripGroups {
             .groups()
             .iter()
             .map(|group| {
-                let (fill, ink) = colours(group.colour);
                 let tip = solidcraft_ui_text::format("tab_group.label", &[("name", &named(group))]);
-                (group.id, group.name.clone(), tip, fill, ink, group.colour)
+                (group.id, group.name.clone(), tip, fill(group.colour), group.colour)
             })
             .collect();
         let of_tab: Vec<Option<usize>> = marks.iter().map(|mark| mark.and_then(|id| groups.iter().position(|g| g.0 == id))).collect();
@@ -212,10 +211,10 @@ impl StripGroups {
     pub(crate) fn group_menus(&self) -> Vec<Vec<TabMenuRow<'_>>> {
         self.groups
             .iter()
-            .map(|(_, _, _, _, _, current)| {
+            .map(|(_, _, _, _, current)| {
                 let mut rows = vec![TabMenuRow::new(RENAME, &self.rename, ""), TabMenuRow::heading(&self.colour).separated()];
                 for (colour, name) in GroupColour::ALL.iter().zip(&self.colour_names) {
-                    rows.push(TabMenuRow::new(colour_row(*colour), name, "").with_swatch(colours(*colour).0, colour == current));
+                    rows.push(TabMenuRow::new(colour_row(*colour), name, "").with_swatch(fill(*colour), colour == current));
                 }
                 rows.push(TabMenuRow::new(UNGROUP, &self.ungroup, "").separated());
                 rows
@@ -225,7 +224,7 @@ impl StripGroups {
 
     /// The labels, with `menus` from [`Self::group_menus`].
     pub(crate) fn labels<'a>(&'a self, menus: &'a [Vec<TabMenuRow<'a>>]) -> Vec<GroupLabel<'a>> {
-        self.groups.iter().zip(menus).map(|((_, name, tip, fill, ink, _), menu)| GroupLabel { name, fill: *fill, ink: *ink, tip, menu }).collect()
+        self.groups.iter().zip(menus).map(|((_, name, tip, fill, _), menu)| GroupLabel { name, fill: *fill, tip, menu }).collect()
     }
 
     /// Each tab's own rows: new group, the other groups, out of its group.

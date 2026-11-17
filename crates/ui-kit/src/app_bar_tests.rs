@@ -282,7 +282,6 @@ impl TabsRig {
         let groups = [GroupLabel {
             name: if self.unnamed.get() { "" } else { "Parts" },
             fill: egui::Color32::RED,
-            ink: egui::Color32::WHITE,
             tip: "Tab group: Parts",
             menu: &GROUP_MENU,
         }];
@@ -602,6 +601,20 @@ fn a_tab_groups_label_comes_before_its_tabs_with_its_menu() {
     rig.unnamed.set(true);
     rig.frame(Vec::new());
     assert!(rect("t:group:0").width() < label.width(), "a dot is narrower than a name");
+}
+
+/// The selected design's views show as sub-tabs inside its tab when it is in a group, after the
+/// group's label, and the line under the group runs from the label to its last tab unbroken.
+#[test]
+fn a_grouped_design_shows_its_sub_tabs_after_the_label() {
+    let rect = |name: &str| solidcraft_ui_registry::rect_of(name).unwrap_or_else(|| panic!("{name} is drawn"));
+    let rig = TabsRig::with(Some(true));
+    rig.grouped.set(true);
+    rig.frame(Vec::new());
+    let (label, design, views, next) = (rect("t:group:0"), rect("t:tab:0"), [rect("t:view:0"), rect("t:view:1")], rect("t:tab:1"));
+    assert!(label.right() <= design.left(), "label {label:?} before the design {design:?}");
+    assert!(views.iter().all(|v| v.left() >= design.left() && v.right() <= next.left()), "sub-tabs {views:?} inside the design's tab");
+    assert_eq!(rig.press(rig.at("t:view:1"), egui::PointerButton::Primary), vec![TabAction::SelectView(1)]);
 }
 
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.

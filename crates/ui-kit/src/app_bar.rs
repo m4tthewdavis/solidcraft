@@ -30,7 +30,13 @@ const PILL_AFTER: f32 = 63.0;
 /// a name and the widest label drawn before its name is cut.
 const GROUP_GAP: f32 = 4.0;
 const GROUP_DOT: f32 = 22.0;
-const GROUP_PAD: f32 = 10.0;
+const GROUP_PAD: f32 = 9.0;
+/// A named label's colour dot: its radius and the room it takes before the name.
+const GROUP_SWATCH: f32 = 3.5;
+const GROUP_SWATCH_ROOM: f32 = 12.0;
+/// How strongly a label's pill is tinted with its colour, at rest and under the pointer.
+const GROUP_TINT: f32 = 0.30;
+const GROUP_TINT_HOT: f32 = 0.45;
 const GROUP_LABEL_MAX: f32 = 160.0;
 /// A view's sub-tab: its height, corner radius, label size, the gap between sub-tabs and the
 /// longest label drawn before it is cut.
@@ -776,14 +782,13 @@ pub struct TabRename<'a> {
     pub max: usize,
 }
 
-/// A tab group as the strip draws it: its name (empty: a coloured dot), the label's fill and the
-/// ink of its name on that fill, its accessible name and hover text, and the rows of its
-/// right-click menu.
+/// A tab group as the strip draws it: its name (empty: a coloured dot), its colour (the label's
+/// tint and dot, and the line under its tabs; the name is in the bar's text colour, as the views'
+/// are), its accessible name and hover text, and the rows of its right-click menu.
 #[derive(Clone, Copy, Debug)]
 pub struct GroupLabel<'a> {
     pub name: &'a str,
     pub fill: egui::Color32,
-    pub ink: egui::Color32,
     pub tip: &'a str,
     pub menu: &'a [TabMenuRow<'a>],
 }
@@ -1030,11 +1035,12 @@ fn group_label_width(ui: &egui::Ui, name: &str) -> f32 {
     if name.is_empty() {
         return GROUP_DOT;
     }
-    (text_width(ui, name, crate::type_face::semibold(Tokens::get().font_small)) + 2.0 * GROUP_PAD).min(GROUP_LABEL_MAX)
+    (text_width(ui, name, crate::type_face::semibold(Tokens::get().font_small)) + GROUP_SWATCH_ROOM + 2.0 * GROUP_PAD).min(GROUP_LABEL_MAX)
 }
 
-/// The label of the tab group at place `g`, in `rect`: its name on its colour (a dot of its colour
-/// with no name), or its name field while it is renamed. A right click opens its menu (`menu`), a
+/// The label of the tab group at place `g`, in `rect`: a pill tinted with its colour holding a dot
+/// of the colour and its name in the bar's text colour (a dot of its colour alone with no name), or
+/// its name field while it is renamed. A right click opens its menu (`menu`), a
 /// double click starts renaming it.
 fn group_label(ui: &mut egui::Ui, strip: &mut TabStrip, g: usize, rect: Rect, menu: &mut Option<(usize, Pos2)>, actions: &mut Vec<TabAction>) {
     let Some(label) = strip.groups.get(g).copied() else { return };
@@ -1049,17 +1055,22 @@ fn group_label(ui: &mut egui::Ui, strip: &mut TabStrip, g: usize, rect: Rect, me
     let resp = ui.interact(rect, ui.scope_id().with(("doc_group", g)), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.tip));
     let painter = ui.painter();
+    let hot = resp.hovered() || resp.has_focus();
     if label.name.is_empty() {
+        if hot {
+            painter.circle_filled(rect.center(), 9.0, label.fill.gamma_multiply(GROUP_TINT));
+        }
         painter.circle_filled(rect.center(), 6.0, label.fill);
     } else {
-        painter.rect_filled(rect, 6u8, label.fill);
+        // Tinted, so the name can be in the bar's own text colour on every group colour.
+        painter.rect_filled(rect, 6u8, label.fill.gamma_multiply(if hot { GROUP_TINT_HOT } else { GROUP_TINT }));
+        painter.rect_stroke(rect, 6u8, Stroke::new(1.0, label.fill.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+        painter.circle_filled(pos2(rect.left() + GROUP_PAD + GROUP_SWATCH, rect.center().y), GROUP_SWATCH, label.fill);
+        let ink = Tokens::get().app_bar_text;
         let font = crate::type_face::semibold(Tokens::get().font_small);
-        let galley = painter.layout_no_wrap(label.name.to_string(), font, label.ink);
-        let at = pos2(rect.left() + GROUP_PAD, rect.center().y - galley.size().y / 2.0);
-        painter.with_clip_rect(rect.shrink2(vec2(GROUP_PAD - 2.0, 0.0))).galley(at, galley, label.ink);
-    }
-    if resp.hovered() {
-        painter.rect_stroke(rect.expand(1.0), 7u8, Stroke::new(1.5, label.fill), egui::StrokeKind::Outside);
+        let galley = painter.layout_no_wrap(label.name.to_string(), font, ink);
+        let at = pos2(rect.left() + GROUP_PAD + GROUP_SWATCH_ROOM, rect.center().y - galley.size().y / 2.0);
+        painter.with_clip_rect(rect.shrink2(vec2(GROUP_PAD - 2.0, 0.0))).galley(at, galley, ink);
     }
     let resp = resp.backing_on_hover_text(label.tip);
     if resp.secondary_clicked() {
@@ -1731,6 +1742,8 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
     order.extend(held.map(|(from, _)| from));
     let mut dropped: Option<(usize, usize)> = None;
     let (mut pick, mut shut, mut torn) = (None, None, None);
+    // Where each group's tabs (and label) reach, for the line under them.
+    let mut spans: Vec<Option<(f32, f32)>> = vec![None; strip.groups.len()];
     for i in order {
         let Some(tab) = strip.tabs.get(i).copied() else {
             continue;
@@ -1744,10 +1757,11 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
         };
         let left = slot_left + label_w;
         if let Some(g) = tab.group {
-            // A line in the group's colour runs under its tabs, from its label on.
-            if let Some(label) = strip.groups.get(g) {
-                let line = Rect::from_min_max(pos2(slot_left + 1.0, r.bottom() - 3.0), pos2(left + w - 1.0, r.bottom() - 1.0));
-                ui.painter().rect_filled(line, 1u8, label.fill);
+            // The line under the group runs from its label to its last tab: drawn once, unbroken.
+            if let Some(span) = spans.get_mut(g) {
+                let (from, to) = span.get_or_insert((slot_left, left + w));
+                *from = from.min(slot_left);
+                *to = to.max(left + w);
             }
             if label_w > 0.0 {
                 let lr = Rect::from_min_size(pos2(slot_left, r.center().y - 11.0), vec2(label_w - GROUP_GAP, 22.0));
@@ -1874,6 +1888,12 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
             shut = Some(i);
         } else if (if held.is_some() { resp } else { resp.backing_on_hover_text(tip) }).clicked() {
             pick = Some(i);
+        }
+    }
+    for (span, label) in spans.iter().zip(strip.groups) {
+        if let Some((from, to)) = span {
+            let line = Rect::from_min_max(pos2(from + 1.0, r.bottom() - 3.0), pos2(to - 3.0, r.bottom() - 1.0));
+            ui.painter().rect_filled(line, 1u8, label.fill);
         }
     }
     ui.ctx().data_mut(|d| match drag {
