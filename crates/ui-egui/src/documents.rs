@@ -2038,47 +2038,24 @@ fn renaming_tab_state(rename: Option<&crate::context_menu::Rename>) -> bool {
 }
 
 /// Starts editing the selected design's name in its tab, with the name as shown selected.
-/// While a design tab or a view's sub-tab has the keyboard (it was clicked, with `tab_bar_focus`):
+/// While a design tab or a view's sub-tab has the keyboard (it was clicked, with `tab_bar_focus`),
 /// Left and Right show the previous and next, through the designs and the shown design's views in
-/// strip order (stopping at the ends), Home and End the first and last, F2 renames the one with the
-/// keyboard, and Escape leaves the tab bar. The keys are taken before the shortcuts see them.
+/// strip order (stopping at the ends), and Home and End the first and last: they move along the
+/// tabs, as in any row of tabs. Escape leaves the tab bar and still does what it does everywhere;
+/// every other key, F2 included, stays with the keymap.
 pub(crate) fn tab_bar_keys(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.preferences.tab_bar_focus {
         return;
     }
     let Some((at, stops)) = crate::app_bar::focused_stop(ctx, tab_strip_id()) else { return };
+    let Some(&(_, focused, _)) = stops.get(at) else { return };
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ctx.memory_mut(|m| m.surrender_focus(focused));
+        return;
+    }
     let key = |i: &mut egui::InputState, key| i.consume_key(egui::Modifiers::NONE, key);
-    let (left, right, home, end, rename, escape) = ctx.input_mut(|i| {
-        (
-            key(i, egui::Key::ArrowLeft),
-            key(i, egui::Key::ArrowRight),
-            key(i, egui::Key::Home),
-            key(i, egui::Key::End),
-            key(i, egui::Key::F2),
-            key(i, egui::Key::Escape),
-        )
-    });
-    let Some(&(stop, id, rect)) = stops.get(at) else { return };
-    if escape {
-        ctx.memory_mut(|m| m.surrender_focus(id));
-        app.esc_handled = true;
-        return;
-    }
-    if rename {
-        match stop {
-            crate::app_bar::TabStop::Design(i) => {
-                if let Some((name, _)) = tabs_info(app).get(i).cloned() {
-                    start_tab_rename(app, &name, rect);
-                }
-            }
-            crate::app_bar::TabStop::View(k) => {
-                if let Some(view) = app.docs.views.views().get(k).map(|view| view.id) {
-                    view_rename_start(app, view);
-                }
-            }
-        }
-        return;
-    }
+    let (left, right, home, end) =
+        ctx.input_mut(|i| (key(i, egui::Key::ArrowLeft), key(i, egui::Key::ArrowRight), key(i, egui::Key::Home), key(i, egui::Key::End)));
     let next = if home {
         Some(0)
     } else if end {
@@ -3495,8 +3472,8 @@ mod tests {
 
     /// With `tab_bar_focus` (on by default), a clicked design tab takes the keyboard: Right and Left
     /// show the next and previous design and, for a design whose views are sub-tabs, its views on
-    /// the way; F2 renames the one with the keyboard; Escape, or a click in the view, leaves the
-    /// bar and gives the arrow keys back. Off, a click gives the bar no keyboard.
+    /// the way; Home and End the first and last; F2 is still Rename View; Escape, or a click in the
+    /// view, leaves the bar and gives the arrow keys back. Off, a click gives the bar no keyboard.
     #[test]
     fn the_arrow_keys_move_through_the_tabs_after_a_click() {
         let mut h = crate::scenario::Harness::new();
@@ -3532,8 +3509,9 @@ mod tests {
         assert_eq!(h.app.docs.active, 0, "Home: the first design");
         key(&mut h, "End");
         assert_eq!((h.app.docs.active, h.app.docs.views.active().id), (1, second_views[1]), "End: the last view");
+        // F2 is still the keymap's Rename View: the view with the keyboard is the shown one.
         key(&mut h, "F2");
-        assert_eq!(h.app.docs.view_rename.as_ref().map(|r| r.view), Some(second_views[1]), "F2 renames the focused view");
+        assert_eq!(h.app.docs.view_rename.as_ref().map(|r| r.view), Some(second_views[1]), "F2 renames the shown view");
         h.app.docs.view_rename = None;
         key(&mut h, "ArrowLeft");
         key(&mut h, "ArrowLeft");
@@ -3559,20 +3537,6 @@ mod tests {
         assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_none(), "off: no keyboard");
         key(&mut h, "ArrowRight");
         assert_eq!(h.app.docs.active, 0, "off: the arrow keys stay with the view");
-    }
-
-    /// F2 on a design tab with the keyboard renames the design in its tab.
-    #[test]
-    fn f2_renames_the_design_whose_tab_has_the_keyboard() {
-        let mut h = crate::scenario::Harness::new();
-        h.app.home.open = false;
-        h.app.custom_titlebar = true;
-        h.frames(2);
-        h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
-        h.frames(2);
-        h.step(&json!({"key": "F2"})).unwrap();
-        h.frames(2);
-        assert!(renaming_tab(&h.app), "the design's name is open in its tab");
     }
 
     /// #3055: a right-click on a tab opens its menu; Close Other Tabs from it keeps that tab.
