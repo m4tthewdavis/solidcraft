@@ -30,7 +30,7 @@ const PILL_AFTER: f32 = 63.0;
 /// the user works elsewhere in the window, and the one being worked in (or under the pointer);
 /// and how long a change of brightness takes, in seconds.
 pub const TAB_LOW: f32 = 0.6;
-pub const TAB_MEDIUM: f32 = 0.82;
+pub const TAB_MEDIUM: f32 = 0.78;
 pub const TAB_FULL: f32 = 1.0;
 const TAB_FADE_TIME: f32 = 0.15;
 /// A view's sub-tab: its height, corner radius, label size, the gap between sub-tabs and the
@@ -1335,8 +1335,10 @@ fn draw_view(ui: &mut egui::Ui, strip: &TabStrip, k: usize, view: &ViewTab, vr: 
     let h = strip.handles;
     let main = if view.active { Rect::from_min_max(vr.min, pos2(vr.right() - 20.0, vr.bottom())) } else { vr };
     let resp = ui.interact(main, view_focus_id(strip.id, k), Sense::click_and_drag()).backing_on_hover_text(view.tip);
+    let fill = ui.painter().clone();
     let mut painter = ui.painter().clone();
-    // With the fade, each sub-tab has its own brightness, as the design tabs do.
+    // With the fade, each sub-tab has its own brightness, as the design tabs do; its fill keeps
+    // its theme colour.
     if let Some(focused) = pen.fade {
         let target = tab_level(view.active, resp.hovered() || pen.drag.is_some_and(|d| d.from == k), focused);
         painter.multiply_opacity(ui.ctx().animate_value_with_time(strip.id.with(("view_level", k)), target, TAB_FADE_TIME));
@@ -1345,9 +1347,9 @@ fn draw_view(ui: &mut egui::Ui, strip: &TabStrip, k: usize, view: &ViewTab, vr: 
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, view.active, view.name));
     let deleted = view.state == ViewState::Deleted;
     if view.active {
-        painter.rect_filled(vr, VIEW_RADIUS, t.app_bar_hover_strong);
+        fill.rect_filled(vr, VIEW_RADIUS, t.app_bar_hover_strong);
     } else if resp.hovered() || pen.drag.is_some_and(|d| d.from == k) {
-        painter.rect_filled(vr, VIEW_RADIUS, t.app_bar_hover);
+        fill.rect_filled(vr, VIEW_RADIUS, t.app_bar_hover);
     }
     if deleted {
         let dash = Stroke::new(1.0, t.app_bar_separator.gamma_multiply(0.7));
@@ -1734,8 +1736,9 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
             TAB_FULL
         };
         if plain {
-            ui.set_opacity(base_opacity * level);
+            // The fill keeps its theme colour; what sits on it fades.
             tab_shape(ui.painter(), &t, tr, active, lit || resp.has_focus());
+            ui.set_opacity(base_opacity * level);
         }
         let ink = if strip.focus_fade {
             // A plain tab is dimmed as a whole; an expanded one's name only, its views their own.
