@@ -1934,6 +1934,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
             plus_menu: &plus_menu,
             switcher_menu: &SWITCHER_MENU,
             tear_off_below: TEAR_OFF_BELOW,
+            focus_fade: app.preferences.tab_bar_focus,
         };
         crate::app_bar::tabs(ui, &mut strip, r, x0, x1)
     };
@@ -2037,6 +2038,79 @@ fn renaming_tab_state(rename: Option<&crate::context_menu::Rename>) -> bool {
 }
 
 /// Starts editing the selected design's name in its tab, with the name as shown selected.
+/// While a design tab or a view's sub-tab has the keyboard (it was clicked, with `tab_bar_focus`):
+/// Left and Right show the previous and next, through the designs and the shown design's views in
+/// strip order (stopping at the ends), Home and End the first and last, F2 renames the one with the
+/// keyboard, and Escape leaves the tab bar. The keys are taken before the shortcuts see them.
+pub(crate) fn tab_bar_keys(app: &mut SolveApp, ctx: &egui::Context) {
+    if !app.preferences.tab_bar_focus {
+        return;
+    }
+    let Some((at, stops)) = crate::app_bar::focused_stop(ctx, tab_strip_id()) else { return };
+    let key = |i: &mut egui::InputState, key| i.consume_key(egui::Modifiers::NONE, key);
+    let (left, right, home, end, rename, escape) = ctx.input_mut(|i| {
+        (
+            key(i, egui::Key::ArrowLeft),
+            key(i, egui::Key::ArrowRight),
+            key(i, egui::Key::Home),
+            key(i, egui::Key::End),
+            key(i, egui::Key::F2),
+            key(i, egui::Key::Escape),
+        )
+    });
+    let Some(&(stop, id, rect)) = stops.get(at) else { return };
+    if escape {
+        ctx.memory_mut(|m| m.surrender_focus(id));
+        app.esc_handled = true;
+        return;
+    }
+    if rename {
+        match stop {
+            crate::app_bar::TabStop::Design(i) => {
+                if let Some((name, _)) = tabs_info(app).get(i).cloned() {
+                    start_tab_rename(app, &name, rect);
+                }
+            }
+            crate::app_bar::TabStop::View(k) => {
+                if let Some(view) = app.docs.views.views().get(k).map(|view| view.id) {
+                    view_rename_start(app, view);
+                }
+            }
+        }
+        return;
+    }
+    let next = if home {
+        Some(0)
+    } else if end {
+        stops.len().checked_sub(1)
+    } else if left {
+        at.checked_sub(1)
+    } else if right {
+        Some(at + 1).filter(|n| *n < stops.len())
+    } else {
+        None
+    };
+    let Some(&(stop, id, _)) = next.and_then(|n| stops.get(n)) else { return };
+    match stop {
+        crate::app_bar::TabStop::Design(i) => {
+            if !app.file_load_holds() {
+                switch(app, i);
+            }
+        }
+        crate::app_bar::TabStop::View(k) => {
+            if let Some(view) = app.docs.views.views().get(k).map(|view| view.id) {
+                view_activate(app, view);
+            }
+        }
+    }
+    // The keyboard follows, instead of egui's own move of it in the arrow's direction.
+    ctx.memory_mut(|m| {
+        m.request_focus(id);
+        m.move_focus(egui::FocusDirection::None);
+    });
+    ctx.request_repaint();
+}
+
 fn start_tab_rename(app: &mut SolveApp, name: &str, tab: Rect) {
     let text = solidcraft_ui_text::Locale::for_language(&app.preferences.language).given_name(name);
     app.menu.rename = Some(crate::context_menu::Rename {
@@ -3417,6 +3491,88 @@ mod tests {
         control(&mut a, &json!({"save_indices":[],"answer":"save"}));
         assert_eq!(a.docs.count(), 2);
         assert!(!any_dirty(&a));
+    }
+
+    /// With `tab_bar_focus` (on by default), a clicked design tab takes the keyboard: Right and Left
+    /// show the next and previous design and, for a design whose views are sub-tabs, its views on
+    /// the way; F2 renames the one with the keyboard; Escape, or a click in the view, leaves the
+    /// bar and gives the arrow keys back. Off, a click gives the bar no keyboard.
+    #[test]
+    fn the_arrow_keys_move_through_the_tabs_after_a_click() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.custom_titlebar = true;
+        h.app.preferences.design_views_as_tabs = true;
+        assert!(h.app.preferences.tab_bar_focus, "on by default");
+        h.call("ui.resize", json!({"width": 1600, "height": 900}));
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        open_tab(&mut h.app, Session::default()).unwrap();
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        // The second design has two views: they are stops between it and nothing after.
+        view_open(&mut h.app, ViewKind::Model, None, false);
+        let second_views: Vec<u64> = h.app.docs.views.views().iter().map(|view| view.id).collect();
+        switch(&mut h.app, 0);
+        h.frames(3);
+        let key = |h: &mut crate::scenario::Harness, key: &str| {
+            h.step(&json!({"key": key})).unwrap();
+            h.frames(2);
+        };
+        h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
+        h.frames(2);
+        assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_some(), "the clicked tab has the keyboard");
+        key(&mut h, "ArrowRight");
+        assert_eq!(h.app.docs.active, 1, "Right shows the next design");
+        key(&mut h, "ArrowRight");
+        assert_eq!(h.app.docs.views.active().id, second_views[0], "then its first view");
+        key(&mut h, "ArrowRight");
+        assert_eq!(h.app.docs.views.active().id, second_views[1], "then its second");
+        key(&mut h, "ArrowRight");
+        assert_eq!(h.app.docs.views.active().id, second_views[1], "the end: it stays");
+        key(&mut h, "Home");
+        assert_eq!(h.app.docs.active, 0, "Home: the first design");
+        key(&mut h, "End");
+        assert_eq!((h.app.docs.active, h.app.docs.views.active().id), (1, second_views[1]), "End: the last view");
+        key(&mut h, "F2");
+        assert_eq!(h.app.docs.view_rename.as_ref().map(|r| r.view), Some(second_views[1]), "F2 renames the focused view");
+        h.app.docs.view_rename = None;
+        key(&mut h, "ArrowLeft");
+        key(&mut h, "ArrowLeft");
+        key(&mut h, "ArrowLeft");
+        assert_eq!(h.app.docs.active, 0, "Left back to the first design");
+        // Escape leaves the bar: Right is the view's again.
+        key(&mut h, "Escape");
+        assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_none(), "Escape leaves the bar");
+        key(&mut h, "ArrowRight");
+        assert_eq!(h.app.docs.active, 0, "the arrow keys are the view's again");
+        // A click on a tab, then one in the view, leaves it too.
+        h.step(&json!({"click": {"handle": "tab:design:1"}})).unwrap();
+        h.frames(2);
+        assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_some());
+        h.step(&json!({"click": [800.0, 500.0]})).unwrap();
+        h.frames(2);
+        assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_none(), "a click in the view leaves the bar");
+        // Off: a click gives the bar no keyboard.
+        h.app.preferences.tab_bar_focus = false;
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
+        h.frames(2);
+        assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_none(), "off: no keyboard");
+        key(&mut h, "ArrowRight");
+        assert_eq!(h.app.docs.active, 0, "off: the arrow keys stay with the view");
+    }
+
+    /// F2 on a design tab with the keyboard renames the design in its tab.
+    #[test]
+    fn f2_renames_the_design_whose_tab_has_the_keyboard() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.custom_titlebar = true;
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"key": "F2"})).unwrap();
+        h.frames(2);
+        assert!(renaming_tab(&h.app), "the design's name is open in its tab");
     }
 
     /// #3055: a right-click on a tab opens its menu; Close Other Tabs from it keeps that tab.

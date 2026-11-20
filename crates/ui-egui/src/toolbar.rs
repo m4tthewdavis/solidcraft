@@ -2572,6 +2572,7 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         app.viewport.key_hold = None;
     }
+    crate::documents::tab_bar_keys(app, ctx);
     if app.file_load_holds() {
         return;
     }

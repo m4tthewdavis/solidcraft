@@ -1,0 +1,34 @@
+{
+  "en": {
+    "prefs.tab_bar_focus": "Highlight the tab you are working in",
+    "prefs.tab_bar_focus_note": "A design or view tab you click stays bright and takes the arrow keys, dims a little when you click elsewhere, and other tabs are dimmer; tabs brighten as you point at them. Off: tabs keep a fixed brightness and the arrow keys stay with the view."
+  },
+  "ar": {
+    "prefs.tab_bar_focus": "إبراز علامة التبويب التي تعمل فيها",
+    "prefs.tab_bar_focus_note": "تبقى علامة تبويب التصميم أو العرض التي تنقر عليها ساطعة وتتلقى مفاتيح الأسهم، وتخفت قليلًا عند النقر في مكان آخر، وتكون علامات التبويب الأخرى أخفت؛ وتزداد سطوعًا عند الإشارة إليها. عند الإيقاف: تبقى علامات التبويب بسطوع ثابت وتبقى مفاتيح الأسهم للعرض."
+  },
+  "de": {
+    "prefs.tab_bar_focus": "Registerkarte hervorheben, in der Sie arbeiten",
+    "prefs.tab_bar_focus_note": "Eine angeklickte Entwurfs- oder Ansichtsregisterkarte bleibt hell und erhält die Pfeiltasten, wird beim Klick an anderer Stelle etwas dunkler, andere Registerkarten sind dunkler; unter dem Zeiger werden Registerkarten heller. Aus: Registerkarten behalten eine feste Helligkeit und die Pfeiltasten bleiben bei der Ansicht."
+  },
+  "he": {
+    "prefs.tab_bar_focus": "הדגשת הכרטיסייה שבה עובדים",
+    "prefs.tab_bar_focus_note": "כרטיסיית עיצוב או תצוגה שלוחצים עליה נשארת בהירה ומקבלת את מקשי החצים, מתעמעמת מעט כשלוחצים במקום אחר, ושאר הכרטיסיות עמומות יותר; כרטיסיות מתבהרות כשמצביעים עליהן. כבוי: הכרטיסיות שומרות על בהירות קבועה ומקשי החצים נשארים עם התצוגה."
+  },
+  "ja": {
+    "prefs.tab_bar_focus": "作業中のタブを強調表示",
+    "prefs.tab_bar_focus_note": "クリックしたデザインやビューのタブは明るいまま矢印キーを受け取り、ほかの場所をクリックすると少し暗くなり、ほかのタブはさらに暗くなります。ポインターを合わせるとタブが明るくなります。オフ: タブの明るさは一定で、矢印キーはビューのままです。"
+  },
+  "ko": {
+    "prefs.tab_bar_focus": "작업 중인 탭 강조",
+    "prefs.tab_bar_focus_note": "클릭한 디자인 또는 뷰 탭은 밝게 유지되고 화살표 키를 받으며, 다른 곳을 클릭하면 조금 어두워지고, 다른 탭은 더 어둡습니다. 포인터를 올리면 탭이 밝아집니다. 끄면: 탭 밝기가 고정되고 화살표 키는 뷰에 남습니다."
+  },
+  "vi": {
+    "prefs.tab_bar_focus": "Làm nổi bật thẻ bạn đang làm việc",
+    "prefs.tab_bar_focus_note": "Thẻ thiết kế hoặc góc nhìn bạn nhấp vẫn sáng và nhận các phím mũi tên, mờ đi một chút khi bạn nhấp nơi khác, các thẻ khác mờ hơn; thẻ sáng lên khi bạn trỏ vào. Tắt: các thẻ giữ độ sáng cố định và phím mũi tên vẫn dành cho góc nhìn."
+  },
+  "zh": {
+    "prefs.tab_bar_focus": "突出显示正在使用的选项卡",
+    "prefs.tab_bar_focus_note": "单击的设计或视图选项卡保持明亮并接收方向键，单击其他位置时稍微变暗，其他选项卡更暗；指针悬停时选项卡会变亮。关闭：选项卡亮度固定，方向键仍用于视图。"
+  }
+}

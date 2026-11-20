@@ -26,6 +26,13 @@ const DESIGN_PILL_HEIGHT: f32 = 34.0;
 const PILL_RADIUS: u8 = 8;
 /// The room a pill keeps right of its views: the +, a separator, the close button and its padding.
 const PILL_AFTER: f32 = 63.0;
+/// With [`TabStrip::focus_fade`], how bright a tab is: one not in use, the selected one while
+/// the user works elsewhere in the window, and the one being worked in (or under the pointer);
+/// and how long a change of brightness takes, in seconds.
+pub const TAB_LOW: f32 = 0.6;
+pub const TAB_MEDIUM: f32 = 0.82;
+pub const TAB_FULL: f32 = 1.0;
+const TAB_FADE_TIME: f32 = 0.15;
 /// A view's sub-tab: its height, corner radius, label size, the gap between sub-tabs and the
 /// longest label drawn before it is cut.
 const VIEW_HEIGHT: f32 = 24.0;
@@ -751,6 +758,55 @@ pub struct TabStrip<'a> {
     pub switcher_menu: &'a [TabMenuRow<'a>],
     /// A design tab released this far below the bar is torn off ([`is_tear_off`]); 0 turns it off.
     pub tear_off_below: f32,
+    /// Tabs show where the user works: a click on a design tab or a view's sub-tab gives it the
+    /// keyboard ([`focused_stop`]) and full brightness, the selected one dims a little while the
+    /// user works elsewhere, the others are dimmer, and the pointer brightens a tab gradually
+    /// ([`tab_level`]). Off: fixed brightness and no keyboard, as before.
+    pub focus_fade: bool,
+}
+
+/// How bright a tab is meant to be with [`TabStrip::focus_fade`]: under the pointer or being worked
+/// in (`active` with the tab bar `focused`), full; the selected one while the user works elsewhere,
+/// medium; any other, low.
+pub fn tab_level(active: bool, hovered: bool, focused: bool) -> f32 {
+    if hovered || (active && focused) {
+        TAB_FULL
+    } else if active {
+        TAB_MEDIUM
+    } else {
+        TAB_LOW
+    }
+}
+
+/// A place the keyboard moves through in the tab strip: a design's tab, or one of the shown
+/// design's views (its place) while they are sub-tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabStop {
+    Design(usize),
+    View(usize),
+}
+
+/// The strip's stops in order this frame, each with the id that takes the keyboard and its rect.
+#[derive(Clone, Debug, Default)]
+struct TabStops(Vec<(TabStop, egui::Id, Rect)>);
+
+/// The id the tab of design `i` takes the keyboard with, in the strip keeping its state at `strip`.
+pub fn tab_focus_id(strip: egui::Id, i: usize) -> egui::Id {
+    strip.with(("doc_tab", i))
+}
+
+/// The id the sub-tab of view `k` of the shown design takes the keyboard with.
+pub fn view_focus_id(strip: egui::Id, k: usize) -> egui::Id {
+    strip.with(("doc_view", k))
+}
+
+/// The strip's stops in order as last drawn, and the place among them of the one that has the
+/// keyboard; none while no tab of the strip at `strip` has it.
+pub fn focused_stop(ctx: &egui::Context, strip: egui::Id) -> Option<(usize, Vec<(TabStop, egui::Id, Rect)>)> {
+    let stops = ctx.data(|d| d.get_temp::<TabStops>(strip.with("stops")))?.0;
+    let focused = ctx.memory(|m| m.focused())?;
+    let at = stops.iter().position(|(_, id, _)| *id == focused)?;
+    Some((at, stops))
 }
 
 /// Whether the strip that keeps its state at `id` ([`TabStrip::id`]) has its list of every tab
@@ -997,6 +1053,8 @@ struct Pen<'a> {
     close_design: bool,
     /// The bar's bottom, where the menus open.
     below: f32,
+    /// With [`TabStrip::focus_fade`]: whether the tab bar has the keyboard.
+    fade: Option<bool>,
 }
 
 /// How the selected design's tab is laid out: what [`measure`] decided.
@@ -1275,9 +1333,14 @@ fn more_button(ui: &mut egui::Ui, strip: &TabStrip, rect: Rect, hidden: usize, p
 fn draw_view(ui: &mut egui::Ui, strip: &TabStrip, k: usize, view: &ViewTab, vr: Rect, pen: &mut Pen) {
     let t = Tokens::get();
     let h = strip.handles;
-    let painter = ui.painter().clone();
     let main = if view.active { Rect::from_min_max(vr.min, pos2(vr.right() - 20.0, vr.bottom())) } else { vr };
-    let resp = ui.interact(main, ui.scope_id().with(("doc_view", k)), Sense::click_and_drag()).backing_on_hover_text(view.tip);
+    let resp = ui.interact(main, view_focus_id(strip.id, k), Sense::click_and_drag()).backing_on_hover_text(view.tip);
+    let mut painter = ui.painter().clone();
+    // With the fade, each sub-tab has its own brightness, as the design tabs do.
+    if let Some(focused) = pen.fade {
+        let target = tab_level(view.active, resp.hovered() || pen.drag.is_some_and(|d| d.from == k), focused);
+        painter.multiply_opacity(ui.ctx().animate_value_with_time(strip.id.with(("view_level", k)), target, TAB_FADE_TIME));
+    }
     solidcraft_ui_registry::publish_target(&format!("{}{k}", h.view), vr);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, view.active, view.name));
     let deleted = view.state == ViewState::Deleted;
@@ -1290,13 +1353,14 @@ fn draw_view(ui: &mut egui::Ui, strip: &TabStrip, k: usize, view: &ViewTab, vr: 
         let dash = Stroke::new(1.0, t.app_bar_separator.gamma_multiply(0.7));
         painter.extend(crate::dashed_line(&outline(vr.shrink(0.5)), vr.expand(2.0), dash, 3.0, 2.0));
     }
-    if resp.has_focus() {
+    // With the fade, the keyboard's sub-tab shows by its brightness rather than a ring.
+    if resp.has_focus() && pen.fade.is_none() {
         painter.rect_stroke(vr.expand(1.0), VIEW_RADIUS + 1, Stroke::new(2.0, t.accent), egui::StrokeKind::Outside);
     }
     let dim = t.app_bar_text.gamma_multiply(0.55);
     let ink = if deleted {
         dim
-    } else if view.active {
+    } else if view.active || pen.fade.is_some() {
         t.app_bar_text
     } else {
         t.app_bar_text.gamma_multiply(0.8)
@@ -1351,6 +1415,9 @@ fn draw_view(ui: &mut egui::Ui, strip: &TabStrip, k: usize, view: &ViewTab, vr: 
         pen.popup = Some((Popup::View(k), pos2(vr.left(), pen.below), vr, ui.ctx().cumulative_frame_nr()));
     } else if resp.clicked() {
         pen.actions.push(TabAction::SelectView(k));
+        if pen.fade.is_some() {
+            resp.request_focus();
+        }
     }
     if resp.drag_started_by(egui::PointerButton::Primary) {
         let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(vr.center());
@@ -1542,7 +1609,22 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
         drag: ui.ctx().data(|d| d.get_temp::<ViewDrag>(vdrag_id)).filter(|_| (held_down || released) && !escape),
         close_design: false,
         below: r.bottom(),
+        fade: None,
     };
+    // The stops the keyboard moves through, in strip order: each design, and the shown design's
+    // views while they are sub-tabs. Whether one has the keyboard decides the tabs' brightness.
+    let mut stops: Vec<(TabStop, egui::Id, Rect)> = Vec::new();
+    for i in 0..n {
+        stops.push((TabStop::Design(i), tab_focus_id(strip.id, i), Rect::NOTHING));
+        if kind_of(i) == SelectedLayout::Pill {
+            let views = strip.tabs.get(i).map_or(0, |tab| tab.views.len());
+            stops.extend((0..views).map(|k| (TabStop::View(k), view_focus_id(strip.id, k), Rect::NOTHING)));
+        }
+    }
+    let keyboard = ui.memory(|m| m.focused());
+    let bar_focused = keyboard.is_some_and(|focused| stops.iter().any(|(_, id, _)| *id == focused));
+    pen.fade = strip.focus_fade.then_some(bar_focused);
+    let base_opacity = ui.opacity();
     // The shown tabs' widths, in strip order.
     let widths: Vec<f32> = (first..first + shown)
         .map(|i| match geom.as_ref() {
@@ -1600,7 +1682,10 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
         let (dot, name_w) = geom.as_ref().filter(|_| !plain && i == selected).map_or((0.0, 0.0), |g| (g.dot, g.name_w));
         let hit = if plain { tr } else { Rect::from_min_size(tr.min, vec2((13.0 + dot + name_w + 10.0).min(tr.width()), tr.height())) };
         let active = strip.shown_selected == Some(i);
-        let resp = ui.interact(hit, ui.scope_id().with(("doc_tab", i)), Sense::click_and_drag());
+        let resp = ui.interact(hit, tab_focus_id(strip.id, i), Sense::click_and_drag());
+        if let Some(stop) = stops.iter_mut().find(|(stop, ..)| *stop == TabStop::Design(i)) {
+            stop.2 = tr;
+        }
         solidcraft_ui_registry::publish_target(&format!("{}{i}", h.tab), hit);
         // Dragging a tab along the strip moves it. The tabs are also part of the title bar:
         // dragging the only tab, or one mostly up or down, moves the window. A double click
@@ -1642,10 +1727,24 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
             _ => {}
         }
         let lit = resp.hovered() || held.is_some_and(|(from, _)| from == i);
+        // How bright the tab is: it brightens under the pointer and fades as it is left.
+        let level = if strip.focus_fade {
+            ui.ctx().animate_value_with_time(strip.id.with(("tab_level", i)), tab_level(active, lit, bar_focused), TAB_FADE_TIME)
+        } else {
+            TAB_FULL
+        };
         if plain {
+            ui.set_opacity(base_opacity * level);
             tab_shape(ui.painter(), &t, tr, active, lit || resp.has_focus());
         }
-        let ink = if active || lit { t.app_bar_text } else { t.app_bar_text.gamma_multiply(0.7) };
+        let ink = if strip.focus_fade {
+            // A plain tab is dimmed as a whole; an expanded one's name only, its views their own.
+            if plain { t.app_bar_text } else { t.app_bar_text.gamma_multiply(level) }
+        } else if active || lit {
+            t.app_bar_text
+        } else {
+            t.app_bar_text.gamma_multiply(0.7)
+        };
         let label = format!("{}{}", tab.name, if tab.dirty && plain { " •" } else { "" });
         let font = if active { crate::type_face::semibold(t.font_button) } else { FontId::proportional(t.font_button) };
         let g = ui.painter().layout_no_wrap(label, font, ink);
@@ -1704,12 +1803,24 @@ pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) 
             xresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, show_close, strip.close_name));
             closing |= xresp.middle_clicked() || xresp.backing_on_hover_text(strip.close_tip).clicked();
         }
+        ui.set_opacity(base_opacity);
         if closing {
             shut = Some(i);
         } else if (if held.is_some() { resp } else { resp.backing_on_hover_text(tip) }).clicked() {
             pick = Some(i);
+            if strip.focus_fade {
+                ui.memory_mut(|m| m.request_focus(tab_focus_id(strip.id, i)));
+            }
         }
     }
+    // A press anywhere else in the window (the toolbar, the view) leaves the tab bar.
+    if bar_focused
+        && let Some(focused) = keyboard
+        && ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !r.contains(p)))
+    {
+        ui.memory_mut(|m| m.surrender_focus(focused));
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(strip.id.with("stops"), TabStops(stops)));
     ui.ctx().data_mut(|d| match drag {
         Some(v) => {
             d.insert_temp(drag_id, v);
