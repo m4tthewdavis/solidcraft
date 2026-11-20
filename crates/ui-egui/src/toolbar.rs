@@ -2646,7 +2646,11 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         || inline_editor
         || chat_owner
         || (crate::viewport_status::enabled(app) && app.ui.palette_open)
-        || (ctx.egui_wants_keyboard_input() && !(crate::viewport_status::enabled(app) && app.viewport_status.owns_focus(ctx)))
+        || (ctx.egui_wants_keyboard_input()
+            && !(crate::viewport_status::enabled(app) && app.viewport_status.owns_focus(ctx))
+            // A tab with the keyboard takes only Left and Right ([`crate::documents::tab_bar_keys`]):
+            // every shortcut still works while it has it.
+            && !crate::documents::tab_bar_has_keyboard(app, ctx))
     {
         if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             let owner = if app.dialog.is_some() && !popup_owner && !inline_editor { crate::EscapeOwner::Dialog } else { crate::EscapeOwner::Overlay };

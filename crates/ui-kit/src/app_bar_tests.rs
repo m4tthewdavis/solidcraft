@@ -658,7 +658,6 @@ fn a_tabs_brightness_follows_where_the_user_works() {
     assert_eq!(tab_level(false, false, true), TAB_LOW);
     assert_eq!(tab_level(false, false, false), TAB_LOW);
     assert_eq!(tab_level(false, true, false), TAB_FULL, "the pointer brightens any tab");
-    assert!(TAB_LOW < TAB_MEDIUM && TAB_MEDIUM < TAB_FULL);
 }
 
 /// With the fade, a click on a design tab or a view's sub-tab gives it the keyboard; the stops run

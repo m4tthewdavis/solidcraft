@@ -2038,11 +2038,16 @@ fn renaming_tab_state(rename: Option<&crate::context_menu::Rename>) -> bool {
 }
 
 /// Starts editing the selected design's name in its tab, with the name as shown selected.
+/// Whether a design tab or a view's sub-tab has the keyboard ([`tab_bar_keys`]).
+pub(crate) fn tab_bar_has_keyboard(app: &SolveApp, ctx: &egui::Context) -> bool {
+    app.preferences.tab_bar_focus && crate::app_bar::focused_stop(ctx, tab_strip_id()).is_some()
+}
+
 /// While a design tab or a view's sub-tab has the keyboard (it was clicked, with `tab_bar_focus`),
 /// Left and Right show the previous and next, through the designs and the shown design's views in
-/// strip order (stopping at the ends), and Home and End the first and last: they move along the
-/// tabs, as in any row of tabs. Escape leaves the tab bar and still does what it does everywhere;
-/// every other key, F2 included, stays with the keymap.
+/// strip order (stopping at the ends): they move along the tabs, as in any row of tabs. Escape
+/// leaves the tab bar and still does what it does everywhere; every other key, F2 and Home
+/// included, stays with the keymap.
 pub(crate) fn tab_bar_keys(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.preferences.tab_bar_focus {
         return;
@@ -2054,13 +2059,13 @@ pub(crate) fn tab_bar_keys(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let key = |i: &mut egui::InputState, key| i.consume_key(egui::Modifiers::NONE, key);
-    let (left, right, home, end) =
-        ctx.input_mut(|i| (key(i, egui::Key::ArrowLeft), key(i, egui::Key::ArrowRight), key(i, egui::Key::Home), key(i, egui::Key::End)));
-    let next = if home {
-        Some(0)
-    } else if end {
-        stops.len().checked_sub(1)
-    } else if left {
+    let (left, right) = ctx.input_mut(|i| (key(i, egui::Key::ArrowLeft), key(i, egui::Key::ArrowRight)));
+    if left || right {
+        // The keyboard stays in the tabs, at the ends too, instead of egui's own move of it in
+        // the arrow's direction.
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
+    let next = if left {
         at.checked_sub(1)
     } else if right {
         Some(at + 1).filter(|n| *n < stops.len())
@@ -3472,7 +3477,7 @@ mod tests {
 
     /// With `tab_bar_focus` (on by default), a clicked design tab takes the keyboard: Right and Left
     /// show the next and previous design and, for a design whose views are sub-tabs, its views on
-    /// the way; Home and End the first and last; F2 is still Rename View; Escape, or a click in the
+    /// the way, stopping at the ends; the shortcuts still work; Escape, or a click in the
     /// view, leaves the bar and gives the arrow keys back. Off, a click gives the bar no keyboard.
     #[test]
     fn the_arrow_keys_move_through_the_tabs_after_a_click() {
@@ -3497,6 +3502,12 @@ mod tests {
         h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
         h.frames(2);
         assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_some(), "the clicked tab has the keyboard");
+        // The shortcuts still work while a tab has the keyboard: Ctrl+Z undoes the shown design's box.
+        let features = h.app.session.doc.features.len();
+        h.step(&json!({"key": "Z", "cmd": true})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.session.doc.features.len(), features - 1, "Ctrl+Z still undoes");
+        assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_some(), "and the tab keeps the keyboard");
         key(&mut h, "ArrowRight");
         assert_eq!(h.app.docs.active, 1, "Right shows the next design");
         key(&mut h, "ArrowRight");
@@ -3505,18 +3516,12 @@ mod tests {
         assert_eq!(h.app.docs.views.active().id, second_views[1], "then its second");
         key(&mut h, "ArrowRight");
         assert_eq!(h.app.docs.views.active().id, second_views[1], "the end: it stays");
-        key(&mut h, "Home");
-        assert_eq!(h.app.docs.active, 0, "Home: the first design");
-        key(&mut h, "End");
-        assert_eq!((h.app.docs.active, h.app.docs.views.active().id), (1, second_views[1]), "End: the last view");
-        // F2 is still the keymap's Rename View: the view with the keyboard is the shown one.
-        key(&mut h, "F2");
-        assert_eq!(h.app.docs.view_rename.as_ref().map(|r| r.view), Some(second_views[1]), "F2 renames the shown view");
-        h.app.docs.view_rename = None;
-        key(&mut h, "ArrowLeft");
-        key(&mut h, "ArrowLeft");
-        key(&mut h, "ArrowLeft");
+        for _ in 0..3 {
+            key(&mut h, "ArrowLeft");
+        }
         assert_eq!(h.app.docs.active, 0, "Left back to the first design");
+        key(&mut h, "ArrowLeft");
+        assert_eq!(h.app.docs.active, 0, "the start: it stays");
         // Escape leaves the bar: Right is the view's again.
         key(&mut h, "Escape");
         assert!(crate::app_bar::focused_stop(&h.ctx, tab_strip_id()).is_none(), "Escape leaves the bar");
