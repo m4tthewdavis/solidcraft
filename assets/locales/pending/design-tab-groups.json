@@ -21,6 +21,7 @@
     "tab_group.rename": "Rename tab group",
     "tab_group.ungroup": "Ungroup"
   },
+  "en-GB": { "tab_group.colour": "Colour" },
   "ar": {
     "cmd.tab.group.add": "إضافة إلى مجموعة علامات تبويب",
     "cmd.tab.group.create": "مجموعة علامات تبويب جديدة",
