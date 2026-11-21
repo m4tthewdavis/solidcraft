@@ -1,0 +1,46 @@
+# Fork-only test build: a Windows portable zip of this branch, on GitHub's own runner. Not for upstream.
+name: Fork test build
+
+on:
+  push:
+    branches: ["claude/*-build"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  windows:
+    name: Windows portable
+    runs-on: windows-2025
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version
+        shell: bash
+        run: |
+          base="$(awk '/^\[/ { p = ($0 == "[workspace.package]"); next } p && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)"
+          echo "SOLIDCRAFT_VERSION=${base%%-*}-test+${GITHUB_SHA:0:7}" >>"$GITHUB_ENV"
+          echo "SHORT=${GITHUB_SHA:0:7}" >>"$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fork-windows-x64
+      - name: Build and package (portable zip)
+        shell: pwsh
+        run: ./packaging/windows/package.ps1 -Arch x64 -PortableOnly
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solidcraft-${{ env.SHORT }}-windows-portable
+          path: dist/release/*-portable.zip
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
