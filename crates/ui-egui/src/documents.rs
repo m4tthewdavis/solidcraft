@@ -6441,7 +6441,9 @@ mod tests {
         assert_eq!(h.app.session.doc.features.len(), features - 1, "Ctrl+Z still undoes");
         assert_eq!(stop(&h), Some(Design(0)), "and the tab keeps the keyboard");
         key(&mut h, "ArrowRight");
-        assert_eq!(stop(&h), Some(Design(1)), "Right moves the keyboard to the next design");
+        assert_eq!(stop(&h), Some(View(0)), "Right moves the keyboard to the shown design's view");
+        key(&mut h, "ArrowRight");
+        assert_eq!(stop(&h), Some(Design(1)), "then to the next design");
         assert_eq!(h.app.docs.active, 0, "without showing it");
         key(&mut h, "Enter");
         assert_eq!(h.app.docs.active, 1, "Enter shows it");
