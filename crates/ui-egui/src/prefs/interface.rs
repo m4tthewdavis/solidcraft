@@ -329,6 +329,7 @@ pub(super) fn layout(app: &mut SolveApp, ui: &mut egui::Ui) {
                 &mut app.preferences.tab_double_click_renames,
                 "tab_double_click_renames",
             );
+            layout_check(ui, app.tr("prefs.tab_bar_focus"), app.tr("prefs.tab_bar_focus_note"), &mut app.preferences.tab_bar_focus, "tab_bar_focus");
             windows_smooth_window_drag_row(app, ui, WINDOWS_SMOOTH_WINDOW_DRAG_AVAILABLE);
             layout_check(
                 ui,

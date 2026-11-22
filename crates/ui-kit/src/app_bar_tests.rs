@@ -1164,6 +1164,8 @@ struct TabsRig {
     rename: Option<usize>,
     text: std::cell::RefCell<String>,
     focused: std::cell::Cell<bool>,
+    /// The strip's [`TabStrip::focus_fade`].
+    focus_fade: std::cell::Cell<bool>,
 }
 
 impl TabsRig {
@@ -1194,6 +1196,7 @@ impl TabsRig {
             rename: rename.map(|(k, _)| k),
             text: std::cell::RefCell::new(text),
             focused: std::cell::Cell::new(false),
+            focus_fade: std::cell::Cell::new(false),
         };
         rig.frame(Vec::new());
         rig
@@ -1268,6 +1271,7 @@ impl TabsRig {
             layout_fill_heading: "",
             switcher_menu: &SWITCHER_MENU,
             tear_off_below: 40.0,
+            focus_fade: self.focus_fade.get(),
         };
         let (x0, x1) = if self.views.is_some() { (20.0, 780.0) } else { (100.0, 700.0) };
         let x1 = self.room.map_or(x1, |room| x0 + room);
@@ -1620,6 +1624,51 @@ fn a_view_drop_slot_shifts_only_neighbours_at_or_after_the_local_index() {
     assert_eq!(rig.at("t:view:1"), second);
     assert_eq!(rig.at("t:vnew"), plus);
     assert!(view_drag_gap(&rig.ctx, strip, 1).is_none());
+}
+
+#[test]
+fn a_tabs_brightness_follows_where_the_user_works() {
+    assert_eq!(tab_level(true, false, true), TAB_FULL, "the shown tab while the bar has the keyboard");
+    assert_eq!(tab_level(true, false, false), TAB_MEDIUM, "the shown tab while the user works elsewhere");
+    assert_eq!(tab_level(false, false, true), TAB_LOW);
+    assert_eq!(tab_level(false, false, false), TAB_LOW);
+    assert_eq!(tab_level(false, true, false), TAB_FULL, "the pointer or the keyboard brightens any tab");
+}
+
+/// With the fade, a click on a design tab or a view's sub-tab gives it the keyboard and a design
+/// tab shows the focus ring; the stops run through the designs and the shown design's sub-tabs in
+/// strip order; a press elsewhere in the window takes the keyboard back. Without the fade, a design
+/// tab's click gives it no keyboard, as before.
+#[test]
+fn a_clicked_tab_has_the_keyboard_until_a_press_elsewhere() {
+    let strip = egui::Id::unique("test_tabs");
+    for clear in [false, true] {
+        let mut rig = TabsRig::with(Some(true));
+        rig.clear = clear;
+        rig.frame(Vec::new());
+        rig.press(rig.at("t:tab:1"), egui::PointerButton::Primary);
+        assert!(focused_stop(&rig.ctx, strip).is_none(), "off: no keyboard");
+        assert!(!rig.ctx.memory(|m| m.focused().is_some()), "off: a design tab takes no keyboard");
+        rig.focus_fade.set(true);
+        rig.frame(Vec::new());
+        assert_eq!(rig.press(rig.at("t:tab:1"), egui::PointerButton::Primary), vec![TabAction::Select(1)]);
+        let (at, stops) = focused_stop(&rig.ctx, strip).expect("the clicked tab has the keyboard");
+        let order: Vec<TabStop> = stops.iter().map(|(stop, ..)| *stop).collect();
+        use TabStop::{Design, View};
+        assert_eq!(order, [Design(0), View(0), View(1), View(2), Design(1), Design(2)], "strip order, the shown design's views after it");
+        assert_eq!(order[at], Design(1));
+        let tab = stops[at].2;
+        let (_, output) = rig.frame_output(Vec::new());
+        let accent = Tokens::get().accent;
+        let ring = output.shapes.iter().any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(r) if r.rect == tab && r.stroke.color == accent));
+        assert!(ring, "clear={clear}: the design tab shows the focus ring");
+        assert_eq!(rig.press(rig.at("t:view:1"), egui::PointerButton::Primary), vec![TabAction::SelectView(1)]);
+        assert_eq!(focused_stop(&rig.ctx, strip).map(|(at, stops)| stops[at].0), Some(View(1)));
+        // A press below the bar, in the window.
+        rig.press(pos2(400.0, 300.0), egui::PointerButton::Primary);
+        rig.frame(Vec::new());
+        assert!(focused_stop(&rig.ctx, strip).is_none(), "clear={clear}: a press elsewhere leaves the bar");
+    }
 }
 
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.

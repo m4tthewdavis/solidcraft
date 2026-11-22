@@ -2954,6 +2954,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
             layout_fill_heading: solidcraft_ui_text::tr_label("Empty cells show"),
             switcher_menu: &switcher_menu,
             tear_off_below: TEAR_OFF_BELOW,
+            focus_fade: app.preferences.tab_bar_focus && !child,
         };
         if child {
             let width = crate::app_bar::preferred_pill_width(ui, &strip);
@@ -3412,6 +3413,60 @@ pub(crate) fn uses_file(app: &SolveApp, path: &str) -> bool {
 /// Until the first layout, reserve all available space for the views.
 pub(crate) fn preferred_tab_width(ctx: &egui::Context) -> f32 {
     ctx.data(|data| data.get_temp::<f32>(tab_strip_id(ctx.viewport_id()).with("preferred_width"))).unwrap_or(f32::INFINITY)
+}
+
+/// Whether a design tab has the keyboard ([`tab_bar_keys`]): the shortcuts keep working then.
+/// A view's sub-tab with the keyboard keeps it, as without `tab_bar_focus`.
+pub(crate) fn design_tab_has_keyboard(app: &SolveApp, ctx: &egui::Context) -> bool {
+    app.preferences.tab_bar_focus
+        && crate::app_bar::focused_stop(ctx, tab_strip_id(ctx.viewport_id()))
+            .is_some_and(|(at, stops)| matches!(stops.get(at), Some((crate::app_bar::TabStop::Design(_), ..))))
+}
+
+/// While a design tab or a view's sub-tab has the keyboard (it was clicked, with
+/// `tab_bar_focus`), Left and Right move it to the previous and next tab, through the designs and
+/// the shown design's views in strip order and stopping at the ends; Enter shows the design or
+/// view with the keyboard. Escape leaves the tab bar and still does its usual job;
+/// every other key stays with the keymap or the sub-tab.
+pub(crate) fn tab_bar_keys(app: &mut SolveApp, ctx: &egui::Context) {
+    if !app.preferences.tab_bar_focus {
+        return;
+    }
+    let Some((at, stops)) = crate::app_bar::focused_stop(ctx, tab_strip_id(ctx.viewport_id())) else { return };
+    let Some(&(stop, focused, _)) = stops.get(at) else { return };
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ctx.memory_mut(|m| m.surrender_focus(focused));
+        return;
+    }
+    let key = |i: &mut egui::InputState, key| i.consume_key(egui::Modifiers::NONE, key);
+    // Enter shows the design or view with the keyboard, as a click on it does.
+    if ctx.input_mut(|input| key(input, egui::Key::Enter)) {
+        match stop {
+            crate::app_bar::TabStop::Design(i) => {
+                if !app.file_load_holds() {
+                    switch(app, i);
+                }
+            }
+            crate::app_bar::TabStop::View(k) => {
+                crate::design_view_ui::handle(app, ctx, crate::app_bar::TabAction::SelectView(k));
+            }
+        }
+        ctx.request_repaint();
+        return;
+    }
+    let (left, right) = ctx.input_mut(|i| (key(i, egui::Key::ArrowLeft), key(i, egui::Key::ArrowRight)));
+    if !(left || right) {
+        return;
+    }
+    let next = if left { at.saturating_sub(1) } else { (at + 1).min(stops.len().saturating_sub(1)) };
+    let id = stops.get(next).map_or(focused, |(_, id, _)| *id);
+    // The keyboard moves along the tabs, and stays at the ends, instead of egui's own move of it
+    // in the arrow's direction.
+    ctx.memory_mut(|m| {
+        m.request_focus(id);
+        m.move_focus(egui::FocusDirection::None);
+    });
+    ctx.request_repaint();
 }
 
 /// Where SolidCraft's document tab strip keeps its state.
@@ -6344,5 +6399,91 @@ mod tests {
         crate::dialogs::cancel(&mut h.app);
         assert!(h.app.dialog.is_none());
         assert_eq!((h.app.session.doc.features.len(), h.app.session.doc.marker), (features, None), "Cancel puts the history back");
+    }
+
+    /// With `tab_bar_focus` (on by default), a clicked design tab takes the keyboard: Left and
+    /// Right move it along the designs and, for the shown design, its sub-tabs, stopping at the
+    /// ends, without showing anything; Enter shows the one it is on. The shortcuts still work while
+    /// a design tab has it; Escape, or a click in the view, leaves the bar. Off, a click on a design
+    /// tab gives the bar no keyboard.
+    #[test]
+    fn the_arrow_keys_move_along_the_tabs_and_enter_shows_one() {
+        use crate::app_bar::TabStop::{Design, View};
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.custom_titlebar = true;
+        h.app.preferences.design_views_as_tabs = true;
+        assert!(h.app.preferences.tab_bar_focus, "on by default");
+        h.call("ui.resize", json!({"width": 1600, "height": 900}));
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        open_tab(&mut h.app, Session::default()).unwrap();
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        // The second design has two views: they are stops after it.
+        view_open(&mut h.app, ViewKind::Model, None, false);
+        let views: Vec<u64> = h.app.docs.views.views().iter().map(|view| view.id).collect();
+        assert_eq!(views.len(), 2);
+        switch(&mut h.app, 0);
+        h.frames(3);
+        let stop = |h: &crate::scenario::Harness| {
+            crate::app_bar::focused_stop(&h.ctx, tab_strip_id(egui::ViewportId::ROOT)).and_then(|(at, stops)| stops.get(at).map(|s| s.0))
+        };
+        let key = |h: &mut crate::scenario::Harness, key: &str| {
+            h.step(&json!({"key": key})).unwrap();
+            h.frames(2);
+        };
+        h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
+        h.frames(2);
+        assert_eq!(stop(&h), Some(Design(0)), "the clicked tab has the keyboard");
+        // The shortcuts still work while a design tab has the keyboard: Ctrl+Z undoes the box.
+        let features = h.app.session.doc.features.len();
+        h.step(&json!({"key": "Z", "cmd": true})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.session.doc.features.len(), features - 1, "Ctrl+Z still undoes");
+        assert_eq!(stop(&h), Some(Design(0)), "and the tab keeps the keyboard");
+        key(&mut h, "ArrowRight");
+        assert_eq!(stop(&h), Some(Design(1)), "Right moves the keyboard to the next design");
+        assert_eq!(h.app.docs.active, 0, "without showing it");
+        key(&mut h, "Enter");
+        assert_eq!(h.app.docs.active, 1, "Enter shows it");
+        assert_eq!(stop(&h), Some(Design(1)), "and the tab keeps the keyboard");
+        let shown = h.app.docs.views.active().id;
+        let other = views.iter().copied().find(|id| *id != shown).unwrap();
+        let other_at = views.iter().position(|id| *id == other).unwrap();
+        key(&mut h, "ArrowRight");
+        assert_eq!(stop(&h), Some(View(0)), "then the shown design's first view");
+        key(&mut h, "ArrowRight");
+        assert_eq!(stop(&h), Some(View(1)), "then its second");
+        key(&mut h, "ArrowRight");
+        assert_eq!(stop(&h), Some(View(1)), "the end: it stays");
+        assert_eq!(h.app.docs.views.active().id, shown, "moving shows nothing");
+        if other_at == 0 {
+            key(&mut h, "ArrowLeft");
+        }
+        key(&mut h, "Enter");
+        assert_eq!(h.app.docs.views.active().id, other, "Enter shows the view");
+        for _ in 0..4 {
+            key(&mut h, "ArrowLeft");
+        }
+        assert_eq!(stop(&h), Some(Design(0)), "Left back to the first design, and it stays");
+        assert_eq!(h.app.docs.active, 1);
+        // Escape leaves the bar.
+        key(&mut h, "Escape");
+        assert_eq!(stop(&h), None, "Escape leaves the bar");
+        key(&mut h, "Enter");
+        assert_eq!(h.app.docs.active, 1, "Enter is no longer the tab's");
+        // A click on a tab, then one in the view, leaves it too.
+        h.step(&json!({"click": {"handle": "tab:design:0"}})).unwrap();
+        h.frames(2);
+        assert_eq!(stop(&h), Some(Design(0)));
+        h.step(&json!({"click": [800.0, 500.0]})).unwrap();
+        h.frames(2);
+        assert_eq!(stop(&h), None, "a click in the view leaves the bar");
+        // Off: a click on a design tab gives the bar no keyboard.
+        h.app.preferences.tab_bar_focus = false;
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "tab:design:1"}})).unwrap();
+        h.frames(2);
+        assert_eq!(stop(&h), None, "off: no keyboard");
+        assert!(h.ctx.memory(|m| m.focused()).is_none(), "off: a design tab takes no keyboard");
     }
 }

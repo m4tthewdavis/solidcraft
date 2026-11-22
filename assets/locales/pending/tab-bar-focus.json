@@ -1,0 +1,34 @@
+{
+  "en": {
+    "prefs.tab_bar_focus": "Highlight the tab you are working in",
+    "prefs.tab_bar_focus_note": "A design or view tab you click stays bright and takes the keyboard: Left and Right move between tabs, Enter opens the one you are on. It dims a little when you click elsewhere, other tabs are dimmer, and tabs brighten as you point at them. Off: tabs keep a fixed brightness."
+  },
+  "ar": {
+    "prefs.tab_bar_focus": "إبراز علامة التبويب التي تعمل فيها",
+    "prefs.tab_bar_focus_note": "تبقى علامة تبويب التصميم أو العرض التي تنقر عليها ساطعة وتتلقى لوحة المفاتيح: ينتقل السهمان الأيسر والأيمن بين علامات التبويب، ويفتح Enter العلامة التي أنت عليها. تخفت قليلًا عند النقر في مكان آخر، وتكون علامات التبويب الأخرى أخفت، وتزداد سطوعًا عند الإشارة إليها. عند الإيقاف: تبقى علامات التبويب بسطوع ثابت."
+  },
+  "de": {
+    "prefs.tab_bar_focus": "Registerkarte hervorheben, in der Sie arbeiten",
+    "prefs.tab_bar_focus_note": "Eine angeklickte Entwurfs- oder Ansichtsregisterkarte bleibt hell und erhält die Tastatur: Pfeil links und rechts wechseln zwischen Registerkarten, Enter öffnet die gewählte. Beim Klick an anderer Stelle wird sie etwas dunkler, andere Registerkarten sind dunkler, und unter dem Zeiger werden Registerkarten heller. Aus: Registerkarten behalten eine feste Helligkeit."
+  },
+  "he": {
+    "prefs.tab_bar_focus": "הדגשת הכרטיסייה שבה עובדים",
+    "prefs.tab_bar_focus_note": "כרטיסיית עיצוב או תצוגה שלוחצים עליה נשארת בהירה ומקבלת את המקלדת: החצים שמאלה וימינה עוברים בין כרטיסיות, ו-Enter פותח את הכרטיסייה הנוכחית. היא מתעמעמת מעט כשלוחצים במקום אחר, שאר הכרטיסיות עמומות יותר, וכרטיסיות מתבהרות כשמצביעים עליהן. כבוי: הכרטיסיות שומרות על בהירות קבועה."
+  },
+  "ja": {
+    "prefs.tab_bar_focus": "作業中のタブを強調表示",
+    "prefs.tab_bar_focus_note": "クリックしたデザインやビューのタブは明るいままキーボードを受け取ります。左右の矢印キーでタブ間を移動し、Enter で選んだタブを開きます。ほかの場所をクリックすると少し暗くなり、ほかのタブはさらに暗く、ポインターを合わせるとタブが明るくなります。オフ: タブの明るさは一定です。"
+  },
+  "ko": {
+    "prefs.tab_bar_focus": "작업 중인 탭 강조",
+    "prefs.tab_bar_focus_note": "클릭한 디자인 또는 뷰 탭은 밝게 유지되고 키보드를 받습니다. 왼쪽과 오른쪽 화살표로 탭 사이를 이동하고 Enter로 현재 탭을 엽니다. 다른 곳을 클릭하면 조금 어두워지고, 다른 탭은 더 어두우며, 포인터를 올리면 탭이 밝아집니다. 끄면: 탭 밝기가 고정됩니다."
+  },
+  "vi": {
+    "prefs.tab_bar_focus": "Làm nổi bật thẻ bạn đang làm việc",
+    "prefs.tab_bar_focus_note": "Thẻ thiết kế hoặc góc nhìn bạn nhấp vẫn sáng và nhận bàn phím: mũi tên trái và phải chuyển giữa các thẻ, Enter mở thẻ đang chọn. Thẻ mờ đi một chút khi bạn nhấp nơi khác, các thẻ khác mờ hơn, và thẻ sáng lên khi bạn trỏ vào. Tắt: các thẻ giữ độ sáng cố định."
+  },
+  "zh": {
+    "prefs.tab_bar_focus": "突出显示正在使用的选项卡",
+    "prefs.tab_bar_focus_note": "单击的设计或视图选项卡保持明亮并接收键盘：左右方向键在选项卡之间移动，Enter 打开当前选项卡。单击其他位置时它会稍微变暗，其他选项卡更暗，指针悬停时选项卡会变亮。关闭：选项卡亮度固定。"
+  }
+}

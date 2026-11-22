@@ -1594,6 +1594,12 @@ preference_settings! {
     /// A double-click on a design tab renames the design in the tab; off, it maximizes the window
     /// as the rest of the title bar does, as before.
     tab_double_click_renames: bool = true, PAGE_LAYOUT;
+    /// The tab bar shows where the user works: a clicked design tab or view sub-tab is bright,
+    /// shows the focus ring and takes the arrow keys (Left/Right move along the tabs, Enter shows
+    /// the one with the ring), dims a little when the user clicks elsewhere, the other tabs are
+    /// dimmer, and the pointer brightens a tab gradually. Off: tabs keep a fixed brightness and a
+    /// design tab's click takes no keyboard, as before.
+    tab_bar_focus: bool = true, PAGE_LAYOUT;
     /// A design's views (Model, Sheet, Render, Animation) are tabs inside its tab; off, the
     /// design keeps one tab and a view switcher lists them.
     design_views_as_tabs: bool = false, PAGE_LAYOUT;
@@ -7460,6 +7466,7 @@ mod tests {
             ("ribbon_reveal", json!(true), PAGE_LAYOUT),
             ("pinned_constraints_in_grid", json!(false), PAGE_LAYOUT),
             ("tab_double_click_renames", json!(false), PAGE_LAYOUT),
+            ("tab_bar_focus", json!(false), PAGE_LAYOUT),
             ("design_views_as_tabs", json!(false), PAGE_LAYOUT),
             ("show_design_view_switcher", json!(true), PAGE_LAYOUT),
             ("clear_view_tabs", json!(false), PAGE_LAYOUT),
