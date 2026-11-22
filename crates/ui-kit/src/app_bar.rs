@@ -3773,10 +3773,11 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         }
         // A press anywhere else in the window takes the keyboard from the bar.
         let pressed_elsewhere = ui.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| !r.contains(p)));
-        if bar_focused && pressed_elsewhere {
-            if let Some(focused) = ui.memory(|m| m.focused()).filter(|id| stops.iter().any(|(_, stop, _)| stop == id)) {
-                ui.memory_mut(|m| m.surrender_focus(focused));
-            }
+        if bar_focused
+            && pressed_elsewhere
+            && let Some(focused) = ui.memory(|m| m.focused()).filter(|id| stops.iter().any(|(_, stop, _)| stop == id))
+        {
+            ui.memory_mut(|m| m.surrender_focus(focused));
         }
         ui.ctx().data_mut(|d| d.insert_temp(stops_id, TabStops(stops)));
     }
