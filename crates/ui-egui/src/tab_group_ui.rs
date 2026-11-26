@@ -599,13 +599,14 @@ mod tests {
         let group = call(&mut h, "tab.group.create", json!({"tab": 0, "name": "Pair"}))["result"]["group"].as_u64().unwrap();
         call(&mut h, "tab.group.add", json!({"group": group, "tab": 1}));
         let order = |h: &mut Harness| h.app.docs.tab_numbers();
-        assert_eq!(order(&mut h), vec![0, 1, 2]);
+        // The designs by their numbers as the window gave them: the first two grouped, the third not.
+        let [first, second, third]: [u64; 3] = order(&mut h).try_into().unwrap();
         super::move_group(&mut h.app, group, 0);
-        assert_eq!(order(&mut h), vec![0, 1, 2], "dropped before its own first design: no change");
+        assert_eq!(order(&mut h), vec![first, second, third], "dropped before its own first design: no change");
         super::move_group(&mut h.app, group, 1);
-        assert_eq!(order(&mut h), vec![0, 1, 2], "dropped inside its own block: no change");
+        assert_eq!(order(&mut h), vec![first, second, third], "dropped inside its own block: no change");
         super::move_group(&mut h.app, group, 3);
-        assert_eq!(order(&mut h), vec![2, 0, 1], "to the end, the designs that stay before it");
+        assert_eq!(order(&mut h), vec![third, first, second], "to the end, the designs that stay before it");
         assert_eq!(groups(&mut h), [("Pair".into(), "blue".into(), vec![1, 2])], "still together, now last");
     }
 
