@@ -150,6 +150,33 @@ pub(crate) fn design_opened(app: &mut SolveApp, path: &str) {
     app.docs.pending_groups = Some(pending);
 }
 
+/// Move the designs of group `group` as one block, to just before the design at strip index
+/// `before` (the strip's length: the end). The block keeps its order, and the designs that stay
+/// keep theirs.
+pub(crate) fn move_group(app: &mut SolveApp, group: u64, before: usize) {
+    let numbers = app.docs.tab_numbers();
+    let stay: Vec<u64> = numbers.iter().copied().filter(|n| app.docs.groups.group_of(*n) != Some(group)).collect();
+    let block: Vec<u64> = numbers.iter().copied().filter(|n| app.docs.groups.group_of(*n) == Some(group)).collect();
+    if block.is_empty() {
+        return;
+    }
+    // The block lands after the designs that stay and were before its drop place.
+    let before = before.min(numbers.len());
+    let k = numbers[..before].iter().filter(|n| app.docs.groups.group_of(**n) != Some(group)).count();
+    let mut target = stay[..k].to_vec();
+    target.extend(block);
+    target.extend_from_slice(&stay[k..]);
+    // Each design in turn to its place: the designs before it are already in theirs.
+    for (pos, number) in target.iter().enumerate() {
+        let now = app.docs.tab_numbers();
+        if let Some(from) = now.iter().position(|n| n == number)
+            && from != pos
+        {
+            documents::move_tab(app, from, pos);
+        }
+    }
+}
+
 /// Put the design in tab `tab` in a new group named `name` (in `colour`, or the next one). Its id.
 pub fn create(app: &mut SolveApp, tab: usize, name: &str, colour: Option<GroupColour>) -> Option<u64> {
     let number = *app.docs.tab_numbers().get(tab)?;
@@ -410,6 +437,11 @@ pub(crate) fn handle(app: &mut SolveApp, groups: &StripGroups, action: &TabActio
             }
         }
         TabAction::GroupRenameDone | TabAction::GroupRenameCancelled => {}
+        TabAction::MoveGroup { group, before } => {
+            if let Some(id) = groups.id_at(*group) {
+                move_group(app, id, *before);
+            }
+        }
         TabAction::ToggleGroup(place) => {
             // The state shown is the one turned over: a group folded for the design on screen
             // shows open, and folds once another design is shown.

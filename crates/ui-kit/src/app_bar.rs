@@ -1760,6 +1760,9 @@ pub enum TabAction {
     GroupRenameCancelled,
     /// The group at this place had its chevron clicked: fold its designs away, or show them.
     ToggleGroup(usize),
+    /// The group at this place was dragged by its label and let go: its designs move as one block
+    /// to just before the tab at strip index `before` (the strip's length: to the end).
+    MoveGroup { group: usize, before: usize },
 }
 
 /// A tab dragged along the strip: the tab and where along it the pointer grabbed it.
@@ -3523,8 +3526,14 @@ fn group_label(ui: &mut egui::Ui, strip: &mut TabStrip, g: usize, rect: Rect, me
         actions.extend(done);
         return;
     }
-    let resp = ui.interact(rect, ui.scope_id().with(("doc_group", g)), Sense::click());
+    let resp = ui.interact(rect, ui.scope_id().with(("doc_group", g)), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.tip));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(drag_cursor(resp.is_pointer_button_down_on()));
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        ui.ctx().data_mut(|d| d.insert_temp(strip.id.with("group_drag"), g));
+    }
     let painter = ui.painter();
     let hot = resp.hovered() || resp.has_focus();
     if label.name.is_empty() {
@@ -3578,6 +3587,12 @@ fn group_label(ui: &mut egui::Ui, strip: &mut TabStrip, g: usize, rect: Rect, me
     } else if resp.double_clicked() && strip.double_click_renames {
         actions.push(TabAction::StartGroupRename(g));
     }
+}
+
+/// The strip index of the first drawn tab whose centre lies right of `x`: a group dropped there goes
+/// before it. The strip's length when no drawn tab lies right of `x`.
+fn group_drop_before(tab_rects: &[Option<Rect>], x: f32) -> usize {
+    tab_rects.iter().position(|tr| tr.is_some_and(|tr| tr.center().x > x)).unwrap_or(tab_rects.len())
 }
 
 pub fn tabs(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rect, x0: f32, x1: f32) -> Vec<TabAction> {
@@ -3713,6 +3728,8 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
     let mut order: Vec<usize> = (first..first + shown).filter(|&i| held.is_none_or(|(from, _)| from != i)).collect();
     order.extend(held.map(|(from, _)| from));
     let mut dropped: Option<(usize, usize)> = None;
+    // Where each drawn tab is, for a group dragged by its label (`None`: folded away).
+    let mut tab_rects: Vec<Option<Rect>> = vec![None; n];
     let (mut pick, mut shut, mut torn) = (None, None, None);
     let group_menu_id = strip.id.with("group_menu");
     let mut group_menu: Option<(usize, Pos2)> = ui.ctx().data(|d| d.get_temp(group_menu_id));
@@ -3759,6 +3776,9 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             SelectedLayout::Switcher => 30.0_f32.min(r.height() - 4.0),
         };
         let tr = Rect::from_center_size(pos2(left + (w - 2.0) / 2.0, r.center().y), vec2(w - 2.0, height));
+        if let Some(slot) = tab_rects.get_mut(i) {
+            *slot = Some(tr);
+        }
         // An expanded tab's name block is what selects and drags the design: its views are theirs.
         let (dot, name_w) = geom.as_ref().filter(|_| !plain && i == selected).map_or((0.0, 0.0), |g| (g.dot, g.name_w));
         let hit = if plain { tr } else { Rect::from_min_size(tr.min, vec2((13.0 + dot + name_w + 10.0).min(tr.width()), tr.height())) };
@@ -3886,6 +3906,28 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         if let Some((from, to)) = span {
             let line = Rect::from_min_max(pos2(from + 1.0, r.bottom() - 3.0), pos2(to - 3.0, r.bottom() - 1.0));
             ui.painter().rect_filled(line, 1u8, label.fill);
+        }
+    }
+    // A group dragged by its label: a marker where its designs would land while the button is held,
+    // and the move when it is let go (Escape gives it up).
+    let group_drag_id = strip.id.with("group_drag");
+    if let Some(g) = ui.ctx().data(|d| d.get_temp::<usize>(group_drag_id)) {
+        let pointer = ui.ctx().pointer_latest_pos().filter(|_| held_down && !escape);
+        if let Some(p) = pointer {
+            let before = group_drop_before(&tab_rects, p.x);
+            let at = match tab_rects.get(before).copied().flatten() {
+                Some(tr) => Some(tr.left()),
+                None => tab_rects.iter().rev().find_map(|tr| tr.map(|tr| tr.right())),
+            };
+            if let Some(x) = at {
+                ui.painter().vline(x, r.y_range(), Stroke::new(2.0, t.accent));
+            }
+        }
+        if released && !escape && let Some(p) = pointer.or_else(|| ui.ctx().pointer_latest_pos()) {
+            actions.push(TabAction::MoveGroup { group: g, before: group_drop_before(&tab_rects, p.x) });
+        }
+        if !held_down || released || escape {
+            ui.ctx().data_mut(|d| d.remove::<usize>(group_drag_id));
         }
     }
     if drag.is_some() || pen.drag.is_some() {
