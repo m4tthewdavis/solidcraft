@@ -1731,6 +1731,24 @@ fn a_folded_group_draws_only_its_label_and_its_chevron_toggles_it() {
     assert_eq!(rig.press(rig.at("t:group:0:toggle"), egui::PointerButton::Primary), vec![TabAction::ToggleGroup(0)]);
 }
 
+/// Dragging a group by its label and letting go asks for the group's designs to move to where the
+/// pointer is: before the first tab that lies right of it, the end when none does.
+#[test]
+fn dragging_a_group_label_asks_for_its_designs_to_move_to_the_drop_place() {
+    let rect = |name: &str| solidcraft_ui_registry::rect_of(name).unwrap_or_else(|| panic!("{name} is drawn"));
+    let rig = TabsRig::new();
+    rig.grouped.set(true);
+    rig.frame(Vec::new());
+    let at = rect("t:group:0").center();
+    let third = rect("t:tab:2");
+    let past = pos2(third.center().x + 6.0, third.center().y);
+    let mut actions = Vec::new();
+    actions.extend(rig.frame(vec![egui::Event::PointerMoved(at), press(at, true)]));
+    actions.extend(rig.frame(vec![egui::Event::PointerMoved(past)]));
+    actions.extend(rig.frame(vec![egui::Event::PointerMoved(past), press(past, false)]));
+    assert_eq!(actions, vec![TabAction::MoveGroup { group: 0, before: 3 }], "let go past every tab: to the end");
+}
+
 /// The selected design's views show as sub-tabs inside its tab when it is in a group, after the
 /// group's label, in both sub-tab styles.
 #[test]

@@ -1762,7 +1762,10 @@ pub enum TabAction {
     ToggleGroup(usize),
     /// The group at this place was dragged by its label and let go: its designs move as one block
     /// to just before the tab at strip index `before` (the strip's length: to the end).
-    MoveGroup { group: usize, before: usize },
+    MoveGroup {
+        group: usize,
+        before: usize,
+    },
 }
 
 /// A tab dragged along the strip: the tab and where along it the pointer grabbed it.
@@ -3923,7 +3926,10 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
                 ui.painter().vline(x, r.y_range(), Stroke::new(2.0, t.accent));
             }
         }
-        if released && !escape && let Some(p) = pointer.or_else(|| ui.ctx().pointer_latest_pos()) {
+        if released
+            && !escape
+            && let Some(p) = pointer.or_else(|| ui.ctx().pointer_latest_pos())
+        {
             actions.push(TabAction::MoveGroup { group: g, before: group_drop_before(&tab_rects, p.x) });
         }
         if !held_down || released || escape {

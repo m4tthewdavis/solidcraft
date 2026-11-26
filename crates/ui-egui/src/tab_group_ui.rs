@@ -591,6 +591,24 @@ mod tests {
         assert!(crate::scenario::rect_of("tab:design:0").is_some() && crate::scenario::rect_of("tab:design:1").is_some(), "the command shows them");
     }
 
+    /// Moving a group moves its designs as one block to the drop place, in their own order; the
+    /// designs that stay keep theirs. Dropping it where it already is changes nothing.
+    #[test]
+    fn a_moved_group_takes_its_designs_as_one_block() {
+        let mut h = three_designs();
+        let group = call(&mut h, "tab.group.create", json!({"tab": 0, "name": "Pair"}))["result"]["group"].as_u64().unwrap();
+        call(&mut h, "tab.group.add", json!({"group": group, "tab": 1}));
+        let order = |h: &mut Harness| h.app.docs.tab_numbers();
+        assert_eq!(order(&mut h), vec![0, 1, 2]);
+        super::move_group(&mut h.app, group, 0);
+        assert_eq!(order(&mut h), vec![0, 1, 2], "dropped before its own first design: no change");
+        super::move_group(&mut h.app, group, 1);
+        assert_eq!(order(&mut h), vec![0, 1, 2], "dropped inside its own block: no change");
+        super::move_group(&mut h.app, group, 3);
+        assert_eq!(order(&mut h), vec![2, 0, 1], "to the end, the designs that stay before it");
+        assert_eq!(groups(&mut h), [("Pair".into(), "blue".into(), vec![1, 2])], "still together, now last");
+    }
+
     /// Groups saved at quit come back with their designs: each saved design that opens again joins
     /// its group, which is made as it was (named, coloured, folded), and a design that was in none
     /// joins none.
