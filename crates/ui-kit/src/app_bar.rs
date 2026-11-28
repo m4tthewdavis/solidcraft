@@ -1951,6 +1951,13 @@ struct Geom {
     stage: Option<CollapseStage>,
 }
 
+/// `name` on one line at most `width` wide, ending in "…" when it is cut.
+fn elided_name(ui: &egui::Ui, name: &str, font: FontId, ink: egui::Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font, ink));
+    job.wrap = egui::text::TextWrapping { max_width: width, max_rows: 1, break_anywhere: true, overflow_character: Some('\u{2026}') };
+    ui.painter().layout_job(job)
+}
+
 fn text_width(ui: &egui::Ui, text: &str, font: FontId) -> f32 {
     ui.painter().layout_no_wrap(text.to_string(), font, Tokens::get().app_bar_text).size().x
 }
@@ -3692,9 +3699,9 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             tab_shape(ui.painter(), &t, tr, active, lit || resp.has_focus());
         }
         let ink = if active || lit { t.app_bar_text } else { t.app_bar_text.gamma_multiply(0.7) };
-        let label = format!("{}{}", tab.name, if tab.dirty && plain { " •" } else { "" });
+        let mark = if tab.dirty && plain { " •" } else { "" };
         let font = if active { crate::type_face::semibold(t.font_button) } else { FontId::proportional(t.font_button) };
-        let g = ui.painter().layout_no_wrap(label, font, ink);
+        let g = ui.painter().layout_no_wrap(format!("{}{mark}", tab.name), font.clone(), ink);
         let text_size = g.size();
         let badge = if tab.security.is_some() { 18.0 } else { 0.0 };
         let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
@@ -3705,7 +3712,16 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         } else {
             (tr.left() + 13.0 + dot, name_w - badge)
         };
-        let tip = tab_tip(tab.name, tab.place, text_size.x > text_w);
+        let cut = text_size.x > text_w;
+        let tip = tab_tip(tab.name, tab.place, cut);
+        // A name too long for its room ends in "…", and the unsaved mark after it stays.
+        let (g, marked) = if cut {
+            let marked = ui.painter().layout_no_wrap(mark.to_string(), font.clone(), ink);
+            (elided_name(ui, tab.name, font, ink, (text_w - marked.size().x).max(0.0)), Some(marked))
+        } else {
+            (g, None)
+        };
+        let shown_w = g.size().x + marked.as_ref().map_or(0.0, |m| m.size().x);
         let clip = Rect::from_min_size(tr.min, vec2(text_x - tr.left() + text_w, tr.height()));
         match strip.rename.as_mut().filter(|_| active) {
             Some(rename) => {
@@ -3713,7 +3729,11 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
                 actions.extend(rename_field(ui, field, rename, &h));
             }
             None => {
+                let name_w = g.size().x;
                 ui.painter().with_clip_rect(clip).galley(pos2(text_x, tr.center().y - text_size.y / 2.0), g, ink);
+                if let Some(marked) = marked.filter(|m| !m.is_empty()) {
+                    ui.painter().with_clip_rect(clip).galley(pos2(text_x + name_w, tr.center().y - text_size.y / 2.0), marked, ink);
+                }
             }
         }
         if dot > 0.0 && tab.dirty {
@@ -3732,7 +3752,7 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         let mut closing = !strip.pop_out && (resp.middle_clicked() || (!plain && pen.close_design));
         if plain {
             if tab.views.len() > 1 {
-                let at = pos2(text_x + text_size.x.min(text_w) + 7.0, tr.center().y);
+                let at = pos2(text_x + shown_w.min(text_w) + 7.0, tr.center().y);
                 count_badge(ui, at, tab.views.len(), false);
             }
             if plus > 0.0 {

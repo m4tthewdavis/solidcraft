@@ -1165,6 +1165,8 @@ struct TabsRig {
     room: Option<f32>,
     single_view: bool,
     name: &'static str,
+    /// The first design has unsaved changes.
+    dirty: bool,
     detached: bool,
     clear: bool,
     layout: Option<(usize, usize)>,
@@ -1200,6 +1202,7 @@ impl TabsRig {
             room: None,
             single_view: false,
             name: "One",
+            dirty: false,
             detached: false,
             clear: false,
             layout: None,
@@ -1244,7 +1247,7 @@ impl TabsRig {
         } else {
             &[]
         };
-        let first = DocTab { views, collapsed: self.collapsed.get(), ..tab(self.name) };
+        let first = DocTab { views, collapsed: self.collapsed.get(), dirty: self.dirty, ..tab(self.name) };
         let layout = self.layout.map(|(visible, window_count)| layout_test_data(visible, window_count));
         let (mut text, mut focused) = (self.text.borrow().clone(), self.focused.get());
         let mut strip = TabStrip {
@@ -1720,6 +1723,44 @@ fn a_folded_tab_with_room_keeps_its_names_full_room() {
         let rect = solidcraft_ui_registry::rect_of(handle).unwrap_or_else(|| panic!("{handle} is drawn"));
         assert!(tab.contains_rect(rect), "{handle} fits in the folded tab {tab:?}: {rect:?}");
     }
+}
+
+/// The text a frame drew for `text`, as it shows: with "…" where it was cut.
+fn shown_text(output: &egui::FullOutput, text: &str) -> Option<String> {
+    fn find(shape: &egui::Shape, text: &str, found: &mut Option<String>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| find(shape, text, found)),
+            egui::Shape::Text(shape) if shape.galley.job.text == text => {
+                *found = Some(shape.galley.rows.iter().flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr)).collect());
+            }
+            _ => {}
+        }
+    }
+    let mut found = None;
+    output.shapes.iter().for_each(|clipped| find(&clipped.shape, text, &mut found));
+    found
+}
+
+/// A design's name that fits its tab shows whole; one cut to the tab's room ends in "…" rather
+/// than being chopped mid-letter, and an unsaved design keeps its mark after the "…".
+#[test]
+fn a_cut_tab_name_ends_in_an_ellipsis_and_keeps_its_unsaved_mark() {
+    let mut rig = TabsRig::with(Some(true));
+    rig.collapsed.set(true);
+    rig.name = "Plastic Enclosure";
+    let (_, output) = rig.frame_output(Vec::new());
+    assert_eq!(shown_text(&output, rig.name).as_deref(), Some("Plastic Enclosure"), "a name that fits shows whole");
+    rig.name = Box::leak("W".repeat(128).into_boxed_str());
+    for room in [None, Some(394.0)] {
+        rig.room = room;
+        let (_, output) = rig.frame_output(Vec::new());
+        let shown = shown_text(&output, rig.name).unwrap_or_else(|| panic!("room {room:?}: the name is drawn"));
+        assert!(shown.ends_with('\u{2026}') && shown.starts_with('W') && shown.chars().count() < 128, "room {room:?}: cut with an ellipsis: {shown}");
+    }
+    rig.dirty = true;
+    let (_, output) = rig.frame_output(Vec::new());
+    assert!(shown_text(&output, rig.name).is_some_and(|shown| shown.ends_with('\u{2026}')), "the cut name still ends in an ellipsis");
+    assert_eq!(shown_text(&output, " •").as_deref(), Some(" •"), "the unsaved mark stays after it");
 }
 
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.
