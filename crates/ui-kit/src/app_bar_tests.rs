@@ -1763,6 +1763,53 @@ fn a_cut_tab_name_ends_in_an_ellipsis_and_keeps_its_unsaved_mark() {
     assert_eq!(shown_text(&output, " •").as_deref(), Some(" •"), "the unsaved mark stays after it");
 }
 
+/// In a bar too crowded for every design, the other designs go behind the » button before the
+/// selected one is squeezed: its name block, view and buttons stay apart inside the strip, no
+/// other tab is drawn over them, and its name shows at least its first letter and "…".
+#[test]
+fn a_crowded_bar_keeps_the_selected_tab_whole() {
+    for single_view in [true, false] {
+        // Below 300 points a design with several views has no room even alone for its shown
+        // view and its "N more" button side by side.
+        let rooms: &[f32] = if single_view { &[260.0, 300.0, 360.0, 420.0] } else { &[300.0, 360.0, 420.0] };
+        for &room in rooms {
+            let mut rig = TabsRig::with(Some(true));
+            rig.clear = true;
+            rig.single_view = single_view;
+            rig.name = "Plastic Enclosure";
+            rig.room = Some(room);
+            let (_, output) = rig.frame_output(Vec::new());
+            let case = format!("{} view(s), room {room}", if single_view { 1 } else { 3 });
+            // The selected tab's name block (what selects and drags it) and its pieces after it.
+            let block = solidcraft_ui_registry::rect_of("t:tab:0").unwrap_or_else(|| panic!("{case}: the selected tab is drawn"));
+            let mut pieces: Vec<_> = ["t:view:", "t:vnew", "t:vcollapse", "t:vmore", "t:close:0"]
+                .into_iter()
+                .flat_map(solidcraft_ui_registry::rects)
+                .filter(|(name, _)| !name.starts_with("t:close:") || name == "t:close:0")
+                .collect();
+            assert!(!pieces.is_empty(), "{case}: the tab's pieces are drawn");
+            pieces.push(("t:tab:0".to_string(), block));
+            let others: Vec<_> = solidcraft_ui_registry::rects("t:tab:").into_iter().filter(|(name, _)| name != "t:tab:0").collect();
+            for (k, (name, rect)) in pieces.iter().enumerate() {
+                assert!(rect.left() >= 20.0 - 0.5 && rect.right() <= 20.0 + room + 0.5, "{case}: {name} {rect:?} stays in the strip");
+                for (other, other_rect) in pieces.iter().skip(k + 1).chain(&others) {
+                    assert!(rect.intersect(*other_rect).width() <= 0.5, "{case}: {name} {rect:?} is not drawn over {other} {other_rect:?}");
+                }
+            }
+            // Narrower, the tab's pieces alone take the room the strip has once every other design
+            // is behind the »: they still stay apart, and the name gives way altogether.
+            if room < if single_view { 300.0 } else { 360.0 } {
+                continue;
+            }
+            let shown = shown_text(&output, rig.name).unwrap_or_else(|| panic!("{case}: the name is drawn"));
+            assert!(
+                shown.starts_with('P') && (shown == rig.name || shown.ends_with('\u{2026}')),
+                "{case}: a letter of the name and \"…\": {shown:?}"
+            );
+        }
+    }
+}
+
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.
 #[test]
 fn the_view_switcher_lists_every_view() {
@@ -2018,8 +2065,14 @@ fn a_narrow_switcher_keeps_its_targets_inside_the_tab() {
     rig.frame(Vec::new());
     let switcher = solidcraft_ui_registry::rect_of("t:switcher").expect("switcher remains available");
     let close = solidcraft_ui_registry::rect_of("t:close:0").expect("close remains available");
-    assert!(switcher.is_positive() && switcher.left() >= 20.0 && switcher.right() <= 108.0);
-    assert!(close.right() <= 108.0 && !close.intersects(switcher));
+    // The other designs make way behind the » before the selected one is squeezed: its name
+    // block, switcher and × stay apart, inside the strip, and clear of every other tab.
+    let block = solidcraft_ui_registry::rect_of("t:tab:0").expect("the selected tab's name block");
+    assert!(switcher.is_positive() && switcher.left() >= block.right() - 0.5 && close.left() >= switcher.right() - 0.5);
+    assert!(block.left() >= 20.0 && close.right() <= 20.0 + 304.0);
+    for (name, other) in solidcraft_ui_registry::rects("t:tab:").into_iter().filter(|(name, _)| name != "t:tab:0") {
+        assert!(!other.intersects(switcher) && !other.intersects(close), "{name} {other:?} is drawn over the switcher or ×");
+    }
     assert!(rig.press(switcher.center(), egui::PointerButton::Primary).is_empty());
     rig.frame(Vec::new());
     rig.frame(Vec::new());
