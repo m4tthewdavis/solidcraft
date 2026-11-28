@@ -1709,6 +1709,17 @@ fn a_folded_tab_with_room_keeps_its_names_full_room() {
         needed = TAB_NAME_MAX + 30.0 + SMALL_PLUS + CHEVRON + 7.0 + badge_width(ui, VIEWS.len());
     });
     assert!(tab.width() >= needed, "the folded tab {tab:?} keeps the name's room beside its count, +, chevron and × ({needed})");
+    // In a strip without that room the name gives way: the tabs and the strip's + stay inside
+    // the strip, and the folded tab's buttons stay inside the tab.
+    rig.room = Some(394.0);
+    rig.frame(Vec::new());
+    let tab = solidcraft_ui_registry::rect_of("t:tab:0").expect("the design's tab");
+    assert!(tab.width() < needed, "the name gives way in a narrow strip: {tab:?}");
+    assert!(rig.at("t:new").x <= 20.0 + 394.0, "the strip's + stays inside the strip");
+    for handle in ["t:vnew", "t:vcollapse", "t:close:0"] {
+        let rect = solidcraft_ui_registry::rect_of(handle).unwrap_or_else(|| panic!("{handle} is drawn"));
+        assert!(tab.contains_rect(rect), "{handle} fits in the folded tab {tab:?}: {rect:?}");
+    }
 }
 
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.

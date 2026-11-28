@@ -3528,13 +3528,14 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         });
     let selected = strip.selected;
     let kind_of = |i: usize| geom.as_ref().filter(|_| i == selected).map_or(SelectedLayout::Plain, |g| g.kind);
-    let natural: Vec<f32> = strip
+    // Each tab's natural width, and the part of it that is its name's.
+    let sized: Vec<(f32, f32)> = strip
         .tabs
         .iter()
         .enumerate()
         .map(|(i, tab)| {
             if let Some(g) = geom.as_ref().filter(|_| i == strip.selected) {
-                return g.width;
+                return (g.width, 0.0);
             }
             let shown_name = match &typed {
                 Some(text) if i == strip.selected => text.clone(),
@@ -3546,12 +3547,17 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
             let count = if tab.views.len() > 1 { 7.0 + badge_width(ui, tab.views.len()) } else { 0.0 };
             let chevron = if folded(strip, i) { CHEVRON } else { 0.0 };
-            (text.min(TAB_NAME_MAX) + 40.0 + badge + plus + chevron + count).max(72.0)
+            let name = text.min(TAB_NAME_MAX);
+            ((name + 40.0 + badge + plus + chevron + count).max(72.0), name)
         })
         .collect();
+    let natural: Vec<f32> = sized.iter().map(|(width, _)| *width).collect();
     // A folded selected design keeps the room its name, count, + and chevron need, as an expanded
-    // one keeps its pill's.
-    let folded_w = folded(strip, selected).then(|| natural.get(selected).copied()).flatten();
+    // one keeps its pill's, as far as the strip has it: its name gives way first, never its buttons.
+    let folded_w = folded(strip, selected).then(|| sized.get(selected).copied()).flatten().map(|(width, name)| {
+        let room = x1 - x0 - new_tab_width - MIN_TAB * n.saturating_sub(1) as f32;
+        width.min(room).max(width - name)
+    });
     let reserved = geom.as_ref().map(|g| g.width).or(folded_w).map_or(0.0, |width| (width - MIN_TAB).max(0.0));
     let (first, shown, w) = tab_layout(n, strip.selected, x1 - x0 - reserved);
     let fit_all = shown == n && natural.iter().sum::<f32>() <= x1 - x0 - new_tab_width;
