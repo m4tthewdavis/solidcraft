@@ -426,6 +426,11 @@ pub fn height(_editing: bool) -> f32 {
 }
 /// The least width of a document tab before the tabs scroll behind the » list.
 const MIN_TAB: f32 = 90.0;
+/// The room the » button that lists the tabs scrolled out of the strip takes.
+const MORE_BUTTON: f32 = 26.0;
+/// The most room a document tab gives its name while the strip has room for every tab. The cap is
+/// on the name alone: a folded design's count, + and chevron come on top, never out of the name.
+const TAB_NAME_MAX: f32 = 160.0;
 /// The expanded design tab (option A): its height and corner radius.
 const DESIGN_PILL_HEIGHT: f32 = 30.0;
 const DESIGN_GROUP_BACKING_HEIGHT: f32 = 27.0;
@@ -1817,7 +1822,7 @@ pub fn tab_layout(n: usize, selected: usize, room: f32) -> (usize, usize, f32) {
         return (0, n, (avail / n as f32).min(220.0));
     }
     // Leave room for the » button.
-    let fit = (((avail - 26.0) / MIN_TAB).floor() as usize).max(1);
+    let fit = (((avail - MORE_BUTTON) / MIN_TAB).floor() as usize).max(1);
     let first = selected.saturating_sub(fit - 1).min(n - fit);
     (first, fit, MIN_TAB)
 }
@@ -1946,6 +1951,18 @@ struct Geom {
     more_w: f32,
     switch_w: f32,
     stage: Option<CollapseStage>,
+    /// The least width its pieces need side by side: its buttons, its shown view and the first
+    /// letter of its name with "…". Below it they would be drawn over one another.
+    least: f32,
+}
+
+/// `name` on one line at most `width` wide, ending in "…" when it is cut.
+fn elided_name(ui: &egui::Ui, name: &str, font: FontId, ink: egui::Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font.clone(), ink));
+    job.wrap = egui::text::TextWrapping { max_width: width, max_rows: 1, break_anywhere: true, overflow_character: Some('\u{2026}') };
+    let galley = ui.painter().layout_job(job);
+    // Too narrow for even "…": nothing, rather than an ellipsis cut short.
+    if galley.size().x > width + 0.5 { ui.painter().layout_no_wrap(String::new(), font, ink) } else { galley }
 }
 
 fn text_width(ui: &egui::Ui, text: &str, font: FontId) -> f32 {
@@ -2095,7 +2112,10 @@ fn measure(ui: &egui::Ui, strip: &TabStrip, tab: &DocTab, name: &str, view_typed
     let t = Tokens::get();
     let n = tab.views.len();
     let dot = if tab.dirty { 14.0 } else { 0.0 };
-    let mut name_w = text_width(ui, name, crate::type_face::semibold(t.font_button)) + if tab.security.is_some() { 18.0 } else { 0.0 };
+    let shield = if tab.security.is_some() { 18.0 } else { 0.0 };
+    let mut name_w = text_width(ui, name, crate::type_face::semibold(t.font_button)) + shield;
+    let (full_name, least_name) = (name_w, least_name_width(ui, name, crate::type_face::semibold(t.font_button)) + shield);
+    let least;
     let label_w = |k: usize, v: &ViewTab| match view_typed {
         Some((i, text)) if i == k => text_width(ui, text, view_font(true)).max(RENAME_MIN),
         _ => text_width(ui, v.name, view_font(v.active)),
@@ -2129,6 +2149,7 @@ fn measure(ui: &egui::Ui, strip: &TabStrip, tab: &DocTab, name: &str, view_typed
         let overflow = width_at(active, CollapseStage::Overflow) + VIEW_GAP + if n > 1 { more_w + VIEW_GAP } else { 0.0 };
         let chip_action = if strip.pop_out { 0.0 } else { 19.0 };
         let fixed = pill_before(dot, 0.0) + chip_action + after + TAB_MARGIN;
+        least = fixed + least_name + overflow;
         name_w = name_w.min((room - fixed - overflow).max(0.0));
         let common = fixed + name_w;
         let stages =
@@ -2138,6 +2159,11 @@ fn measure(ui: &egui::Ui, strip: &TabStrip, tab: &DocTab, name: &str, view_typed
         view_ws = (0..n).map(|k| width_at(k, chosen)).collect();
         (SelectedLayout::Pill, (stages[chosen as usize] + incoming).min(room).max(stages[CollapseStage::Overflow as usize].min(room)))
     } else {
+        least = match kind {
+            SelectedLayout::Pill => pill_min - full_name + least_name,
+            SelectedLayout::Switcher => 2.0 + 13.0 + dot + 8.0 + SLASH + 8.0 + 8.0 + 22.0 + 4.0 + switch_w.min(72.0) + least_name,
+            SelectedLayout::Plain => MIN_TAB,
+        };
         (kind, if kind == SelectedLayout::Pill { (pill + incoming).min(room) } else { switcher.min(room.max(MIN_TAB)) })
     };
     let (name_w, switch_w) = if kind == SelectedLayout::Switcher {
@@ -2149,7 +2175,15 @@ fn measure(ui: &egui::Ui, strip: &TabStrip, tab: &DocTab, name: &str, view_typed
     } else {
         (name_w, switch_w)
     };
-    Geom { kind, index: strip.selected, width, dot, name_w, view_ws, more_w, switch_w, stage }
+    Geom { kind, index: strip.selected, width, dot, name_w, view_ws, more_w, switch_w, stage, least }
+}
+
+/// The least room a design's name is given before other tabs make way: its first letter and
+/// "…", or the whole name when that is narrower.
+fn least_name_width(ui: &egui::Ui, name: &str, font: FontId) -> f32 {
+    let first = name.chars().next().map(|c| format!("{c}\u{2026}")).unwrap_or_default();
+    // A point over: the ellipsis is placed only where it fits whole.
+    text_width(ui, name, font.clone()).min(text_width(ui, &first, font) + 1.0)
 }
 
 /// The selected design group's width before any view labels or the design name collapse.
@@ -3500,8 +3534,8 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
     let n = strip.tabs.len();
     let mut view_drop_zones = Vec::new();
     let mut actions = Vec::new();
-    // Each tab fits its name (up to MAX_FIT) while all of them fit; otherwise they share the room.
-    const MAX_FIT: f32 = 200.0;
+    // Each tab fits its name (up to TAB_NAME_MAX) and what follows it while all of them fit;
+    // otherwise they share the room.
     // The selected tab grows with a name being typed into it.
     let typed = strip.rename.as_ref().map(|r| r.text.clone());
     let view_typed = strip.view_rename.as_ref().map(|(k, r)| (*k, r.text.clone()));
@@ -3520,18 +3554,30 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
                     || (strip.clear_view_tabs && strip.views_as_tabs && !tab.views.is_empty()))
         })
         .map(|tab| {
+            let name = typed.as_deref().unwrap_or(tab.name);
+            let view_typed = view_typed.as_ref().map(|(k, text)| (*k, text.as_str()));
             let room = (x1 - x0 - new_tab_width - MIN_TAB * n.saturating_sub(1) as f32).max(0.0);
-            measure(ui, strip, &tab, typed.as_deref().unwrap_or(tab.name), view_typed.as_ref().map(|(k, text)| (*k, text.as_str())), room)
+            let g = measure(ui, strip, &tab, name, view_typed, room);
+            // With more designs open than fit beside it, the others go behind the » button before
+            // the selected tab is squeezed below what its pieces need.
+            if g.width + 0.5 < g.least && n > 1 {
+                let alone = (x1 - x0 - new_tab_width - MORE_BUTTON).max(0.0);
+                measure(ui, strip, &tab, name, view_typed, g.least.min(alone).max(room))
+            } else {
+                g
+            }
         });
     let selected = strip.selected;
     let kind_of = |i: usize| geom.as_ref().filter(|_| i == selected).map_or(SelectedLayout::Plain, |g| g.kind);
-    let natural: Vec<f32> = strip
+    // Each tab's natural width, the part of it that is its name's, and the least of that part:
+    // the name's first letter and "…", with its unsaved mark.
+    let sized: Vec<(f32, f32, f32)> = strip
         .tabs
         .iter()
         .enumerate()
         .map(|(i, tab)| {
             if let Some(g) = geom.as_ref().filter(|_| i == strip.selected) {
-                return g.width;
+                return (g.width, 0.0, 0.0);
             }
             let shown_name = match &typed {
                 Some(text) if i == strip.selected => text.clone(),
@@ -3543,12 +3589,20 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
             let count = if tab.views.len() > 1 { 7.0 + badge_width(ui, tab.views.len()) } else { 0.0 };
             let chevron = if folded(strip, i) { CHEVRON } else { 0.0 };
-            (text + 40.0 + badge + plus + chevron + count).clamp(72.0, MAX_FIT)
+            let name = text.min(TAB_NAME_MAX);
+            let font = crate::type_face::semibold(t.font_button);
+            let mark = if tab.dirty { text_width(ui, " •", font.clone()) } else { 0.0 };
+            let least = (least_name_width(ui, &shown_name, font) + mark).min(name);
+            ((name + 40.0 + badge + plus + chevron + count).max(72.0), name, least)
         })
         .collect();
+    let natural: Vec<f32> = sized.iter().map(|(width, _, _)| *width).collect();
     // A folded selected design keeps the room its name, count, + and chevron need, as an expanded
-    // one keeps its pill's.
-    let folded_w = folded(strip, selected).then(|| natural.get(selected).copied()).flatten();
+    // one keeps its pill's, as far as the strip has it: its name gives way first, never its buttons.
+    let folded_w = folded(strip, selected).then(|| sized.get(selected).copied()).flatten().map(|(width, name, least)| {
+        let room = x1 - x0 - new_tab_width - MIN_TAB * n.saturating_sub(1) as f32;
+        width.min(room).max(width - name + least)
+    });
     let reserved = geom.as_ref().map(|g| g.width).or(folded_w).map_or(0.0, |width| (width - MIN_TAB).max(0.0));
     let (first, shown, w) = tab_layout(n, strip.selected, x1 - x0 - reserved);
     let fit_all = shown == n && natural.iter().sum::<f32>() <= x1 - x0 - new_tab_width;
@@ -3683,9 +3737,9 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             tab_shape(ui.painter(), &t, tr, active, lit || resp.has_focus());
         }
         let ink = if active || lit { t.app_bar_text } else { t.app_bar_text.gamma_multiply(0.7) };
-        let label = format!("{}{}", tab.name, if tab.dirty && plain { " •" } else { "" });
+        let mark = if tab.dirty && plain { " •" } else { "" };
         let font = if active { crate::type_face::semibold(t.font_button) } else { FontId::proportional(t.font_button) };
-        let g = ui.painter().layout_no_wrap(label, font, ink);
+        let g = ui.painter().layout_no_wrap(format!("{}{mark}", tab.name), font.clone(), ink);
         let text_size = g.size();
         let badge = if tab.security.is_some() { 18.0 } else { 0.0 };
         let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
@@ -3696,7 +3750,16 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         } else {
             (tr.left() + 13.0 + dot, name_w - badge)
         };
-        let tip = tab_tip(tab.name, tab.place, text_size.x > text_w);
+        let cut = text_size.x > text_w;
+        let tip = tab_tip(tab.name, tab.place, cut);
+        // A name too long for its room ends in "…", and the unsaved mark after it stays.
+        let (g, marked) = if cut {
+            let marked = ui.painter().layout_no_wrap(mark.to_string(), font.clone(), ink);
+            (elided_name(ui, tab.name, font, ink, (text_w - marked.size().x).max(0.0)), Some(marked))
+        } else {
+            (g, None)
+        };
+        let shown_w = g.size().x + marked.as_ref().map_or(0.0, |m| m.size().x);
         let clip = Rect::from_min_size(tr.min, vec2(text_x - tr.left() + text_w, tr.height()));
         match strip.rename.as_mut().filter(|_| active) {
             Some(rename) => {
@@ -3704,8 +3767,13 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
                 actions.extend(rename_field(ui, field, rename, &h));
             }
             None => {
+                let name_w = g.size().x;
                 let rise = egui::galley_cap_ink_rise(ui.painter(), &g);
-                ui.painter().with_clip_rect(clip).galley(pos2(text_x, tr.center().y - text_size.y / 2.0 - rise), g, ink);
+                let y = tr.center().y - text_size.y / 2.0 - rise;
+                ui.painter().with_clip_rect(clip).galley(pos2(text_x, y), g, ink);
+                if let Some(marked) = marked.filter(|m| !m.is_empty()) {
+                    ui.painter().with_clip_rect(clip).galley(pos2(text_x + name_w, y), marked, ink);
+                }
             }
         }
         if dot > 0.0 && tab.dirty {
@@ -3724,7 +3792,7 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
         let mut closing = !strip.pop_out && (resp.middle_clicked() || (!plain && pen.close_design));
         if plain {
             if tab.views.len() > 1 {
-                let at = pos2(text_x + text_size.x.min(text_w) + 7.0, tr.center().y);
+                let at = pos2(text_x + shown_w.min(text_w) + 7.0, tr.center().y);
                 count_badge(ui, at, tab.views.len(), false);
             }
             if plus > 0.0 {
