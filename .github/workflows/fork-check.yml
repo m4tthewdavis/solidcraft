@@ -1,0 +1,171 @@
+# Fork-only: checks one branch on GitHub's runners, so several branches can be checked at once.
+# Actions › Fork check › Run workflow, then give the branch, the packages for Clippy and the tests.
+# Each Clippy package and each test line gets its own job, so they run side by side. Not for
+# upstream: it lives only on this fork's main.
+name: Fork check
+run-name: "Fork check: ${{ inputs.branch }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to check, for example claude/tab-groups"
+        required: true
+        type: string
+      clippy:
+        description: "Packages for Clippy, separated by spaces (empty: no Clippy)"
+        required: false
+        type: string
+        default: "solidcraft-ui-kit solidcraft-ui-egui"
+      tests:
+        description: "Tests, separated by ';': a package, then cargo test's arguments (empty: no tests)"
+        required: false
+        type: string
+        default: "solidcraft-ui-egui --lib -- documents::"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-check-${{ inputs.branch }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The ci profile without line tables: smaller builds that still fit the runner's disk.
+  CARGO_PROFILE_CI_DEBUG: "false"
+  # As upstream's CI gives the tests (the ui-egui app harness needs more than std's 2 MiB).
+  RUST_MIN_STACK: "8388608"
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      clippy: ${{ steps.plan.outputs.clippy }}
+      tests: ${{ steps.plan.outputs.tests }}
+    steps:
+      - id: plan
+        name: Split the inputs into jobs
+        env:
+          CLIPPY: ${{ inputs.clippy }}
+          TESTS: ${{ inputs.tests }}
+        run: |
+          python3 -I - <<'EOF'
+          import json, os, re
+          package = re.compile(r"^[A-Za-z0-9_-]+$")
+          clippy = [p for p in os.environ["CLIPPY"].split() if package.match(p)]
+          tests = []
+          for line in os.environ["TESTS"].split(";"):
+              words = line.split()
+              if words and package.match(words[0]):
+                  tests.append({"package": words[0], "args": " ".join(words[1:])})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("clippy=" + json.dumps(clippy) + "\n")
+              out.write("tests=" + json.dumps(tests) + "\n")
+          print("Clippy:", clippy)
+          print("Tests:", tests)
+          EOF
+
+  checks:
+    name: Format and repository checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fork-check-repo
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Asset attribution
+        if: ${{ !cancelled() }}
+        run: cargo xtask assets
+      - name: Licences
+        if: ${{ !cancelled() }}
+        run: cargo xtask licences --check
+      - name: Dependency layers
+        if: ${{ !cancelled() }}
+        run: cargo xtask layers
+      - name: Universal UI containers
+        if: ${{ !cancelled() }}
+        run: cargo xtask ui-containers
+      - name: Sorted lists
+        if: ${{ !cancelled() }}
+        run: cargo xtask lists
+      - name: Translations in the complete catalogs
+        if: ${{ !cancelled() }}
+        run: cargo xtask i18n --check --no-registry
+      - name: Agent router and skills cite real files
+        if: ${{ !cancelled() }}
+        run: cargo xtask skills
+
+  clippy:
+    name: Clippy ${{ matrix.package }}
+    needs: plan
+    if: needs.plan.outputs.clippy != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.clippy) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch }}
+          persist-credentials: false
+      - name: Make room (disk and memory)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo fallocate -l 8G /mnt/fork-check.swap && sudo chmod 600 /mnt/fork-check.swap
+          sudo mkswap /mnt/fork-check.swap && sudo swapon /mnt/fork-check.swap
+          df -h / && free -g
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fork-check-clippy-${{ matrix.package }}
+      - name: Clippy
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          # The engine is one very large crate: fewer jobs keep its build inside the memory.
+          if [ "$PACKAGE" = solidcraft-engine ]; then export CARGO_BUILD_JOBS=2; fi
+          cargo clippy -p "$PACKAGE" --all-targets --profile ci --locked -- -D warnings
+
+  tests:
+    name: Test ${{ matrix.test.package }} ${{ matrix.test.args }}
+    needs: plan
+    if: needs.plan.outputs.tests != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJSON(needs.plan.outputs.tests) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch }}
+          persist-credentials: false
+      - name: Make room (disk and memory)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo fallocate -l 8G /mnt/fork-check.swap && sudo chmod 600 /mnt/fork-check.swap
+          sudo mkswap /mnt/fork-check.swap && sudo swapon /mnt/fork-check.swap
+          df -h / && free -g
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fork-check-test-${{ matrix.test.package }}
+      - name: Test
+        env:
+          PACKAGE: ${{ matrix.test.package }}
+          ARGS: ${{ matrix.test.args }}
+        run: |
+          if [ "$PACKAGE" = solidcraft-engine ]; then export CARGO_BUILD_JOBS=2; fi
+          read -ra args <<< "$ARGS"
+          cargo test --profile ci --locked -p "$PACKAGE" "${args[@]}"
