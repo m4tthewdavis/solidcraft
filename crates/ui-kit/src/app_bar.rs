@@ -426,6 +426,9 @@ pub fn height(_editing: bool) -> f32 {
 }
 /// The least width of a document tab before the tabs scroll behind the » list.
 const MIN_TAB: f32 = 90.0;
+/// The most room a document tab gives its name while the strip has room for every tab. The cap is
+/// on the name alone: a folded design's count, + and chevron come on top, never out of the name.
+const TAB_NAME_MAX: f32 = 160.0;
 /// The expanded design tab (option A): its height and corner radius.
 const DESIGN_PILL_HEIGHT: f32 = 30.0;
 const DESIGN_GROUP_BACKING_HEIGHT: f32 = 27.0;
@@ -3500,10 +3503,8 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
     let n = strip.tabs.len();
     let mut view_drop_zones = Vec::new();
     let mut actions = Vec::new();
-    // Each tab fits its name (up to MAX_NAME) and what follows it (its count, + and chevron) while
-    // all of them fit; otherwise they share the room. The cap is on the name alone, so a folded
-    // design's extras never cut its name short.
-    const MAX_NAME: f32 = 160.0;
+    // Each tab fits its name (up to TAB_NAME_MAX) and what follows it while all of them fit;
+    // otherwise they share the room.
     // The selected tab grows with a name being typed into it.
     let typed = strip.rename.as_ref().map(|r| r.text.clone());
     let view_typed = strip.view_rename.as_ref().map(|(k, r)| (*k, r.text.clone()));
@@ -3545,7 +3546,7 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
             let count = if tab.views.len() > 1 { 7.0 + badge_width(ui, tab.views.len()) } else { 0.0 };
             let chevron = if folded(strip, i) { CHEVRON } else { 0.0 };
-            (text.min(MAX_NAME) + 40.0 + badge + plus + chevron + count).max(72.0)
+            (text.min(TAB_NAME_MAX) + 40.0 + badge + plus + chevron + count).max(72.0)
         })
         .collect();
     // A folded selected design keeps the room its name, count, + and chevron need, as an expanded
