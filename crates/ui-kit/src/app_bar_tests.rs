@@ -1694,6 +1694,23 @@ fn the_chevron_folds_a_designs_sub_tabs_into_its_tab() {
     assert!(solidcraft_ui_registry::rect_of("t:vcollapse").is_none(), "a pop-out's strip has no chevron");
 }
 
+/// A folded design's tab with room to spare shows its whole name: its count, + and chevron come
+/// on top of the name's room, not out of it.
+#[test]
+fn a_folded_tab_with_room_shows_its_whole_name() {
+    let mut rig = TabsRig::with(Some(true));
+    rig.name = "Plastic Enclosure Lid";
+    rig.collapsed.set(true);
+    rig.frame(Vec::new());
+    let tab = solidcraft_ui_registry::rect_of("t:tab:0").expect("the design's tab");
+    let mut needed = 0.0;
+    crate::test_support::raw_frame(&rig.ctx, egui::RawInput::default(), |ui| {
+        let name = text_width(ui, rig.name, crate::type_face::semibold(Tokens::get().font_button));
+        needed = name + 30.0 + SMALL_PLUS + CHEVRON + 7.0 + badge_width(ui, VIEWS.len());
+    });
+    assert!(tab.width() >= needed, "the folded tab {tab:?} fits its name, count, +, chevron and × ({needed})");
+}
+
 /// With a view switcher the views list in a menu: a row picks a view, the footer's rows are the app's.
 #[test]
 fn the_view_switcher_lists_every_view() {

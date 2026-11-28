@@ -3500,8 +3500,10 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
     let n = strip.tabs.len();
     let mut view_drop_zones = Vec::new();
     let mut actions = Vec::new();
-    // Each tab fits its name (up to MAX_FIT) while all of them fit; otherwise they share the room.
-    const MAX_FIT: f32 = 200.0;
+    // Each tab fits its name (up to MAX_NAME) and what follows it (its count, + and chevron) while
+    // all of them fit; otherwise they share the room. The cap is on the name alone, so a folded
+    // design's extras never cut its name short.
+    const MAX_NAME: f32 = 160.0;
     // The selected tab grows with a name being typed into it.
     let typed = strip.rename.as_ref().map(|r| r.text.clone());
     let view_typed = strip.view_rename.as_ref().map(|(k, r)| (*k, r.text.clone()));
@@ -3543,7 +3545,7 @@ pub fn tabs_with_view_drop_zones(ui: &mut egui::Ui, strip: &mut TabStrip, r: Rec
             let plus = if small_plus(strip, i) { SMALL_PLUS } else { 0.0 };
             let count = if tab.views.len() > 1 { 7.0 + badge_width(ui, tab.views.len()) } else { 0.0 };
             let chevron = if folded(strip, i) { CHEVRON } else { 0.0 };
-            (text + 40.0 + badge + plus + chevron + count).clamp(72.0, MAX_FIT)
+            (text.min(MAX_NAME) + 40.0 + badge + plus + chevron + count).max(72.0)
         })
         .collect();
     // A folded selected design keeps the room its name, count, + and chevron need, as an expanded
